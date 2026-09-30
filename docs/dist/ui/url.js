@@ -1,5 +1,5 @@
 // Settings in the page URL, and the "Copy link to this world" button.
-import { seed_in, size_in, amount_in, tier_in, gap_in, alt_box, boost_box, item_sel, copy_link_btn } from "./dom.js";
+import { seed_in, size_in, amount_in, tier_in, gap_in, alt_box, boost_box, water_box, item_sel, copy_link_btn } from "./dom.js";
 import { get_version, set_version } from "./inputs.js";
 export function read_url() {
     const p = new URLSearchParams(location.search);
@@ -27,6 +27,8 @@ export function read_url() {
         boost_box.checked = get("pp") !== "0";
     if (get("gap"))
         gap_in.value = get("gap");
+    if (get("water"))
+        water_box.checked = get("water") === "0";
 }
 export function page_link() {
     const p = new URLSearchParams({
@@ -34,6 +36,8 @@ export function page_link() {
         item: item_sel.value, tier: tier_in.value, alt: alt_box.checked ? "1" : "0", pp: boost_box.checked ? "1" : "0",
         gap: gap_in.value,
     });
+    if (water_box.checked)
+        p.set("water", "0");
     const worker = new URLSearchParams(location.search).get("worker"); // local testing only
     if (worker)
         p.set("worker", worker);

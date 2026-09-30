@@ -187,3 +187,42 @@ body {
 .color-red {
     color: var(--warn);
 }
+
+.import-example {
+    margin: 6px 0;
+    padding: 8px 10px;
+    font-size: 14px;
+    line-height: 1.4;
+    white-space: pre;
+    overflow-x: auto;
+    max-width: calc(100vw - 32px);
+    box-sizing: border-box;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.blp-box {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    column-gap: 14px;
+    row-gap: 2px;
+    align-items: baseline;
+    width: var(--btn-w);
+    max-width: calc(100vw - 32px);
+    margin: 4px 0 8px;
+    font-size: 20px;
+}
+
+.blp-id {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 22px;
+    user-select: all;
+}
+
+.blp-link {
+    grid-column: 1 / -1;
+    font-size: 16px;
+    color: #9cdcfe;
+    overflow-wrap: anywhere;
+}

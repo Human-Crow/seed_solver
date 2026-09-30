@@ -6,8 +6,8 @@
     <title>Builderment Seed Solver</title>
 
     <link rel="icon" type="image/x-icon" href="favicon.ico" />
-    <link rel="stylesheet" href="css/main.css?v=1.0.0" />
-    <link rel="stylesheet" href="css/seed.css?v=1.0.0" />
+    <link rel="stylesheet" href="css/main.css?v=1.2.0" />
+    <link rel="stylesheet" href="css/seed.css?v=1.2.0" />
 </head>
 <body>
     <h1>Builderment Seed Solver</h1>
@@ -36,7 +36,7 @@
         <div class="input-row">
             <label class="input-label" for="amount_in">Resources %</label>
             <div class="min-plus-input">
-                <input id="amount_in" class="mp-input-field" type="number" inputmode="numeric" min="50" max="200" step="25" value="100" data-values="50,75,100,150,200"/>
+                <input id="amount_in" class="mp-input-field" type="number" inputmode="numeric" min="10" max="500" step="25" value="100"/>
                 <button class="mp-input-btn" data-action="decrease">−</button>
                 <button class="mp-input-btn" data-action="increase">+</button>
             </div>
@@ -48,6 +48,22 @@
         <button class="button flex-button version-btn" data-version="ios1">iOS 1.0</button>
         <button class="button flex-button version-btn" data-version="ios2">iOS 2.0</button>
     </div>
+    <div class="spacer"></div>
+    <button class="button norm-button" id="import_btn">Import your own world…</button>
+    <input type="file" id="import_file" accept=".txt,.csv,text/plain,text/csv" hidden>
+    <button class="button norm-button hidden" id="import_clear_btn">Use the generated world again</button>
+    <p id="import_note" class="help-note status hidden"></p>
+    <details class="collapsible small-print">
+        <summary class="collap-summary">Import file format</summary>
+        <pre class="import-example">seed: Q1        # optional, gets water + map
+size: 50        # optional
+amount: 100     # optional
+gen2: 0         # optional, 1 = iOS Gen 2.0
+platform: steam # optional, steam or ios
+Wood, 10, -3    # resource, x, y
+Iron Ore, 4, 5
+13, 4, 6        # ids 11-17 work too</pre>
+    </details>
 
     <div class="spacer"></div>
     <div class="spacer"></div>
@@ -95,6 +111,11 @@
                 <input type="checkbox" id="boost_box" checked>
                 <span class="checkmark"></span>
             </label>
+            <label class="check-label-container">
+                Ignore water
+                <input type="checkbox" id="water_box">
+                <span class="checkmark"></span>
+            </label>
         </div>
     </details>
 
@@ -121,6 +142,13 @@
         <p id="result_note" class="help-note"></p>
         <div class="spacer"></div>
         <a id="calc_link" class="button norm-button link-button" href="#" target="_blank" rel="noopener">Open in Alt Calculator</a>
+        <button class="button norm-button" id="blp_btn">Make Blueprint</button>
+        <p id="blp_note" class="help-note status hidden"></p>
+        <div id="blp_box" class="blp-box hidden">
+            <span class="stat-label">Blueprint id</span>
+            <span id="blp_id" class="blp-id"></span>
+            <a id="blp_link" class="blp-link" href="#" target="_blank" rel="noopener"></a>
+        </div>
         <button class="button norm-button" id="copy_link_btn">Copy link to this world</button>
         <div class="spacer"></div>
         <table class="item-boosts" id="boost_table"></table>
@@ -151,6 +179,6 @@
     <div class="spacer"></div>
     <div class="bottom-space"></div>
 
-    <script type="module" src="dist/main.js?v=1.0.0"></script>
+    <script type="module" src="dist/main.js?v=1.2.0"></script>
 </body>
 </html>

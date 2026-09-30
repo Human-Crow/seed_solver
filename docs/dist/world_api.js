@@ -1,5 +1,5 @@
 // Fetches a generated world from the Cloudflare worker (the generator itself stays on the server).
-const DEFAULT_WORKER = "https://builderment.hcrow.workers.dev";
+export const DEFAULT_WORKER = "https://builderment.hcrow.workers.dev";
 function align4(offset) {
     return (offset + 3) & ~3;
 }

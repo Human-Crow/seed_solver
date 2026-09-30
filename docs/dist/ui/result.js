@@ -3,6 +3,7 @@ import { RAW_ITEMS } from "../solver/data.js";
 import { result_block, result_img, result_score, result_note, boost_table, calc_link_a } from "./dom.js";
 import { fmt, pretty } from "./format.js";
 import { calc_link } from "./calc_link.js";
+import { set_blueprint_plants } from "./blueprint.js";
 export function hide_result() {
     result_block.classList.add("hidden");
 }
@@ -29,5 +30,6 @@ export function show_result(settings, gen2, d, plants) {
     }).join("");
     boost_table.innerHTML = head + rows;
     calc_link_a.href = calc_link(settings, gen2, d, ncoal, nnuc);
+    set_blueprint_plants(plants);
 }
 //# sourceMappingURL=result.js.map

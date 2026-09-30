@@ -4,8 +4,8 @@ import { RECIPES, RAW_ITEMS } from "../solver/data.js";
 import type { SolverSettings } from "../solver/solve.js";
 import type { Version } from "../world_api.js";
 import {
-    seed_in, size_in, amount_in, tier_in, tier_img, gap_in, alt_box, boost_box, item_sel, fake_sel,
-    solve_btn, stop_btn,
+    seed_in, size_in, amount_in, tier_in, tier_img, gap_in, alt_box, boost_box, water_box, item_sel, fake_sel,
+    solve_btn, stop_btn, import_btn, import_clear_btn,
 } from "./dom.js";
 import { pretty } from "./format.js";
 
@@ -33,7 +33,7 @@ export function settings_now(): SolverSettings {
 export function set_running(on: boolean) {
     solve_btn.classList.toggle("hidden", on);
     stop_btn.classList.toggle("hidden", !on);
-    for (const el of [seed_in, size_in, amount_in, tier_in, gap_in, alt_box, boost_box]) el.disabled = on;
+    for (const el of [seed_in, size_in, amount_in, tier_in, gap_in, alt_box, boost_box, water_box, import_btn, import_clear_btn]) el.disabled = on;
     document.querySelectorAll<HTMLButtonElement>(".version-btn, .mp-input-btn").forEach((b) => (b.disabled = on));
 }
 

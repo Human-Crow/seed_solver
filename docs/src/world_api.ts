@@ -1,6 +1,6 @@
 // Fetches a generated world from the Cloudflare worker (the generator itself stays on the server).
 
-const DEFAULT_WORKER = "https://builderment.hcrow.workers.dev";
+export const DEFAULT_WORKER = "https://builderment.hcrow.workers.dev";
 
 
 export type Version = "steam" | "ios1" | "ios2";

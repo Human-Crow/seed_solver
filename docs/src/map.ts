@@ -229,19 +229,21 @@ export class MapView {
             }
         }
 
-        // power plants on top: at least 9 screen pixels, dark halo, boost-yellow outline
+        // power plants on top: never smaller than 2.2 screen pixels per tile (so a 2x2 coal plant
+        // is about 4 px and a nuclear plant 7-9 px when zoomed out), dark halo, yellow outline
         for (const p of this.plants) {
             const st = PLANT_STYLE[p.kind];
             const mx = X(p.x + p.w / 2), my = Y(p.y + p.h / 2);
-            const pw = Math.max(Math.abs(p.w * s), 9 * dpr), ph = Math.max(Math.abs(p.h * s), 9 * dpr);
-            const po = Math.max(1.5 * dpr, Math.min(pw, ph) * 0.14);
+            const minTile = 2.2 * dpr;
+            const pw = Math.abs(p.w) * Math.max(s, minTile), ph = Math.abs(p.h) * Math.max(s, minTile);
+            const po = Math.max(dpr, Math.min(pw, ph) * 0.12);
             if (!inView(mx, my, Math.max(pw, ph) + po)) continue;
             ctx.fillStyle = HALO;
             ctx.fillRect(mx - pw / 2 - po, my - ph / 2 - po, pw + 2 * po, ph + 2 * po);
             ctx.fillStyle = st.fill;
             ctx.fillRect(mx - pw / 2, my - ph / 2, pw, ph);
             ctx.strokeStyle = "#fff08c";
-            ctx.lineWidth = Math.max(1.5 * dpr, s * 0.15);
+            ctx.lineWidth = Math.max(dpr, s * 0.15);
             ctx.strokeRect(mx - pw / 2, my - ph / 2, pw, ph);
         }
     }
