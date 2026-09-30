@@ -1,0 +1,19 @@
+{
+    "compilerOptions": {
+        "rootDir": "./docs/src",
+        "outDir": "./docs/dist",
+
+        "target": "ES2022",
+        "module": "ESNext",
+        "lib": ["ES2022", "DOM", "WebWorker"],
+
+        "strict": true,
+        "exactOptionalPropertyTypes": true,
+
+        "sourceMap": true,
+        "moduleDetection": "force",
+        "skipLibCheck": true
+    },
+
+    "include": ["docs/src"]
+}

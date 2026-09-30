@@ -1,0 +1,73 @@
+.hidden {
+    display: none !important;
+}
+
+.visible {
+    visibility: hidden;
+}
+
+.spacer {
+    height: 15px;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.header-label {
+    margin: 0;
+    font-size: 28px;
+    font-weight: bold;
+}
+
+.flex-block {
+    display: flex;
+    width: var(--btn-w);
+    gap: 6px;
+}
+
+.help-note {
+    margin-top: 0px;
+    margin-bottom: 0px;
+    color: #bbb;
+    font-size: 20px;
+}
+
+.note {
+    margin-top: 0px;
+    margin-bottom: 0px;
+    color: var(--warn);
+}
+
+.color-white {
+    color: #ffffff;
+}
+
+.color-yellow {
+    color: #dcdcaa;
+}
+
+.color-blue {
+    color: #9cdcfe;
+}
+
+.color-green {
+    color: #4ec9b0;
+}
+
+.color-purple {
+    color: #c586c0;
+}
+
+#output {
+    min-height: 800px;
+    margin-bottom: 200px;
+}

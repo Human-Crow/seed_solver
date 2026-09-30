@@ -1,0 +1,35 @@
+// Page elements used by the scripts.
+export const $ = (id) => document.getElementById(id);
+export const seed_in = $("seed_in");
+export const size_in = $("size_in");
+export const amount_in = $("amount_in");
+export const tier_in = $("tier_in");
+export const tier_img = $("tier_img");
+export const gap_in = $("gap_in");
+export const alt_box = $("alt_box");
+export const boost_box = $("boost_box");
+export const item_sel = $("item_select");
+export const fake_sel = $("fake_item_select");
+export const solve_btn = $("solve_btn");
+export const stop_btn = $("stop_btn");
+export const copy_link_btn = $("copy_link_btn");
+export const status_box = $("status");
+export const status_text = $("status_text");
+export const stat_best = $("stat_best");
+export const stat_bound = $("stat_bound");
+export const stat_gap = $("stat_gap");
+export const stat_time = $("stat_time");
+export const result_block = $("result");
+export const result_img = $("result_img");
+export const result_score = $("result_score");
+export const result_note = $("result_note");
+export const boost_table = $("boost_table");
+export const calc_link_a = $("calc_link");
+export const map_block = $("map_block");
+export const map_canvas = $("map_canvas");
+export const zoom_in_btn = $("zoom_in_btn");
+export const zoom_out_btn = $("zoom_out_btn");
+export const zoom_fit_btn = $("zoom_fit_btn");
+export const areas_box = $("areas_box");
+export const legend = $("legend");
+//# sourceMappingURL=dom.js.map

@@ -1,0 +1,65 @@
+.checkbox-container {
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+    column-gap: 10px;
+    row-gap: 0px;
+    align-items: center;
+}
+
+
+.check-label-container {
+    display: block;
+    position: relative;
+    line-height: 30px;
+    padding-left: 38px;
+    margin: 3px 6px 6px 0;
+    min-width: 50px;
+    user-select: none;
+    color: var(--text);
+    cursor: pointer;
+}
+
+.check-label-container input {
+    position: absolute;
+    opacity: 0;
+    height: 0;
+    width: 0;
+}
+
+.checkmark {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 30px;
+    width: 30px;
+    border-radius: var(--radius-sm);
+    background-color: var(--panel);
+}
+
+.check-label-container:hover input ~ .checkmark {
+    background-color: var(--panel-hover);
+}
+
+.check-label-container input:checked ~ .checkmark {
+    background-color: #2196f3;
+}
+
+.checkmark::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+
+    background-color: white;
+
+    -webkit-mask: url("../../assets/Checkmark.svg") no-repeat center;
+    -webkit-mask-size: 90%;
+
+    mask: url("../../assets/Checkmark.svg") no-repeat center;
+    mask-size: 90%;
+
+    display: none;
+}
+
+.check-label-container input:checked ~ .checkmark::after {
+    display: block;
+}

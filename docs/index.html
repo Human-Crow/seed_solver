@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Builderment Seed Solver</title>
+
+    <link rel="icon" type="image/x-icon" href="favicon.ico" />
+    <link rel="stylesheet" href="css/main.css?v=1.0.0" />
+    <link rel="stylesheet" href="css/seed.css?v=1.0.0" />
+</head>
+<body>
+    <h1>Builderment Seed Solver</h1>
+
+    <a href="https://discord.com/users/947807205028139018">Contact me on Discord</a>
+    <div class="spacer"></div>
+    <p class="help-note">Finds the most items per minute a world can make, with the best power plant layout.</p>
+    <div class="spacer"></div>
+    <div class="spacer"></div>
+
+    <p class="header-label">World:</p>
+    <div class="spacer"></div>
+    <div class="input-container">
+        <div class="input-row">
+            <label class="input-label" for="seed_in">Seed</label>
+            <input id="seed_in" class="input seed-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="12" placeholder="e.g. Nhvc"/>
+        </div>
+        <div class="input-row">
+            <label class="input-label" for="size_in">World Size %</label>
+            <div class="min-plus-input">
+                <input id="size_in" class="mp-input-field" type="number" inputmode="numeric" min="50" max="200" step="25" value="100" data-values="50,75,100,150,200"/>
+                <button class="mp-input-btn" data-action="decrease">−</button>
+                <button class="mp-input-btn" data-action="increase">+</button>
+            </div>
+        </div>
+        <div class="input-row">
+            <label class="input-label" for="amount_in">Resources %</label>
+            <div class="min-plus-input">
+                <input id="amount_in" class="mp-input-field" type="number" inputmode="numeric" min="50" max="200" step="25" value="100" data-values="50,75,100,150,200"/>
+                <button class="mp-input-btn" data-action="decrease">−</button>
+                <button class="mp-input-btn" data-action="increase">+</button>
+            </div>
+        </div>
+    </div>
+    <div class="spacer"></div>
+    <div class="flex-block version-block">
+        <button class="button flex-button version-btn" data-version="steam">Steam</button>
+        <button class="button flex-button version-btn" data-version="ios1">iOS 1.0</button>
+        <button class="button flex-button version-btn" data-version="ios2">iOS 2.0</button>
+    </div>
+
+    <div class="spacer"></div>
+    <div class="spacer"></div>
+    <p class="header-label">Item:</p>
+    <select id="item_select" class="sr-only" aria-hidden="true" tabindex="-1"></select>
+    <div class="fake-select large" id="fake_item_select">
+        <button class="button norm-button selected" type="button"></button>
+        <div class="options" role="listbox"></div>
+    </div>
+
+    <div class="spacer"></div>
+    <details class="collapsible">
+        <summary class="collap-summary header-label">Solver Settings:</summary>
+        <div class="spacer"></div>
+        <div class="input-container">
+            <div class="input-row">
+                <label class="input-label" for="tier_in">Extractor</label>
+                <img class="input-icon" id="tier_img" src="assets/Extractor_5.png" alt="">
+                <div class="min-plus-input">
+                    <input id="tier_in" class="mp-input-field" type="number" inputmode="numeric" min="1" max="5" step="1" value="5"/>
+                    <button class="mp-input-btn" data-action="decrease">−</button>
+                    <button class="mp-input-btn" data-action="increase">+</button>
+                </div>
+            </div>
+            <div class="input-row">
+                <label class="input-label" for="gap_in">Gap %</label>
+                <img class="input-icon" src="assets/Fraction.png" alt="">
+                <div class="min-plus-input">
+                    <input id="gap_in" class="mp-input-field" type="number" inputmode="decimal" min="0" max="50" step="0.01" value="0.01"/>
+                    <button class="mp-input-btn" data-action="decrease">−</button>
+                    <button class="mp-input-btn" data-action="increase">+</button>
+                </div>
+            </div>
+        </div>
+        <p class="help-note">Gap: stop once the layout is within this % of the proven maximum.<br>0 = search until the best layout is proven.</p>
+        <div class="spacer"></div>
+        <div class="checkbox-container">
+            <label class="check-label-container">
+                Alt
+                <input type="checkbox" id="alt_box" checked>
+                <span class="checkmark"></span>
+            </label>
+            <label class="check-label-container">
+                Power Plants
+                <input type="checkbox" id="boost_box" checked>
+                <span class="checkmark"></span>
+            </label>
+        </div>
+    </details>
+
+    <div class="spacer"></div>
+    <div class="spacer"></div>
+    <button class="button norm-button" id="solve_btn">Solve</button>
+    <button class="button norm-button stop-button hidden" id="stop_btn">Stop (keep best so far)</button>
+
+    <div id="status" class="status hidden">
+        <p id="status_text" class="help-note"></p>
+        <div class="stat-grid">
+            <span class="stat-label">Best</span><span id="stat_best" class="stat-value">–</span>
+            <span class="stat-label">Proven max</span><span id="stat_bound" class="stat-value">–</span>
+            <span class="stat-label">Gap</span><span id="stat_gap" class="stat-value">–</span>
+            <span class="stat-label">Time</span><span id="stat_time" class="stat-value">–</span>
+        </div>
+        <p class="help-note mobile-note">Keep this page open while it runs: the phone may pause it in the background.</p>
+    </div>
+
+    <div id="result" class="hidden">
+        <div class="spacer"></div>
+        <p class="header-label">Result:</p>
+        <p class="result-score"><img class="item-img" id="result_img" src="assets/Earth_Token.png" alt=""><span id="result_score"></span></p>
+        <p id="result_note" class="help-note"></p>
+        <div class="spacer"></div>
+        <a id="calc_link" class="button norm-button link-button" href="#" target="_blank" rel="noopener">Open in Alt Calculator</a>
+        <button class="button norm-button" id="copy_link_btn">Copy link to this world</button>
+        <div class="spacer"></div>
+        <table class="item-boosts" id="boost_table"></table>
+    </div>
+
+    <div id="map_block" class="hidden">
+        <div class="spacer"></div>
+        <p class="header-label">Map:</p>
+        <p class="help-note">Drag to move, pinch or scroll to zoom.</p>
+        <div class="map-wrap">
+            <canvas id="map_canvas"></canvas>
+            <div class="map-buttons">
+                <button class="button map-btn" id="zoom_in_btn" aria-label="Zoom in">+</button>
+                <button class="button map-btn" id="zoom_out_btn" aria-label="Zoom out">−</button>
+                <button class="button map-btn" id="zoom_fit_btn" aria-label="Show everything">⤢</button>
+            </div>
+        </div>
+        <div class="checkbox-container">
+            <label class="check-label-container">
+                Boost areas
+                <input type="checkbox" id="areas_box" checked>
+                <span class="checkmark"></span>
+            </label>
+        </div>
+        <div id="legend" class="legend"></div>
+    </div>
+
+    <div class="spacer"></div>
+    <div class="bottom-space"></div>
+
+    <script type="module" src="dist/main.js?v=1.0.0"></script>
+</body>
+</html>

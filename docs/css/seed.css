@@ -1,0 +1,189 @@
+/* Seed solver page: additions to the Alt Calculator styles */
+
+body {
+    max-width: 100vw;
+    overflow-x: hidden;
+}
+
+.seed-input {
+    box-sizing: border-box;
+    width: 100px;
+    height: var(--img-size);
+    padding: 1px 8px;
+}
+
+.input-container .input-row {
+    margin-bottom: 6px;
+}
+
+.version-block {
+    flex-wrap: nowrap;
+}
+
+.version-btn {
+    font-size: 20px;
+}
+
+.version-btn.active,
+.button.active {
+    border-color: #dcdcdc;
+    background-color: var(--panel);
+}
+
+.stop-button {
+    color: var(--warn);
+}
+
+.link-button {
+    box-sizing: border-box;
+    text-align: center;
+    text-decoration: none;
+    line-height: calc(var(--btn-h) - 4px);
+}
+
+.status {
+    width: var(--btn-w);
+    margin-top: 6px;
+}
+
+.stat-grid {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    column-gap: 14px;
+    row-gap: 2px;
+    margin: 8px 0;
+    font-size: 20px;
+}
+
+.stat-label {
+    color: #bbb;
+}
+
+.stat-value {
+    font-variant-numeric: tabular-nums;
+}
+
+.result-score {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 6px 0;
+    font-size: var(--font-size);
+}
+
+.map-wrap {
+    position: relative;
+    width: min(calc(100vw - 32px), 720px);
+    aspect-ratio: 1 / 1;
+    margin: 8px 0;
+    border: 2px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: #5678b8;
+}
+
+#map_canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: grab;
+}
+
+#map_canvas:active {
+    cursor: grabbing;
+}
+
+.map-buttons {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.map-btn {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    font-size: 24px;
+    line-height: 1;
+    background-color: rgba(30, 30, 30, 0.85);
+}
+
+.legend {
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+    column-gap: 18px;
+    row-gap: 4px;
+    font-size: 18px;
+    color: #ddd;
+}
+
+.legend span {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.legend i {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.5);
+}
+
+.small-print {
+    font-size: 16px;
+}
+
+.small-print a {
+    color: #9cdcfe;
+}
+
+.bottom-space {
+    height: 120px;
+}
+
+.item-boosts th {
+    text-align: left;
+    font-size: 18px;
+    color: #bbb;
+    font-weight: normal;
+}
+
+.item-boosts td {
+    font-size: 20px;
+}
+
+.mobile-note {
+    display: none;
+    font-size: 16px;
+}
+
+@media (hover: none) and (pointer: coarse) {
+    .mobile-note {
+        display: block;
+    }
+}
+
+/* narrow phones: keep everything inside the screen */
+@media (max-width: 400px) {
+    :root {
+        --btn-w: calc(100vw - 32px);
+        --font-size: 21px;
+    }
+    .version-btn {
+        font-size: 17px;
+    }
+    .item-boosts th,
+    .item-boosts td {
+        padding: 3px 5px;
+    }
+}
+
+.color-red {
+    color: var(--warn);
+}
