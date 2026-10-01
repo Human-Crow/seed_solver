@@ -52,6 +52,10 @@ export class MapView {
             const r = canvas.getBoundingClientRect();
             this.zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top);
         }, { passive: false });
+        // phones: a double tap or long press must not select text or open the callout menu
+        // (dragging and pinching use the pointer events above, which still fire)
+        canvas.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+        for (const t of ["selectstart", "dblclick", "contextmenu", "gesturestart"]) canvas.addEventListener(t, (e) => e.preventDefault());
     }
 
     setWorld(world: World) {

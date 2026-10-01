@@ -179,6 +179,20 @@ body {
     font-size: var(--font-size);
 }
 
+/* no text selection, long-press menu or tap flash on the map and its buttons (double taps while navigating) */
+#map_block,
+.map-wrap,
+#map_canvas {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.map-btn {
+    touch-action: manipulation;     /* no double-tap zoom on the + / - buttons */
+}
+
 .map-wrap {
     position: relative;
     width: min(calc(100vw - 32px), 720px);
