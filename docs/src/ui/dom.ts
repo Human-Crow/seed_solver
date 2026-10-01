@@ -19,6 +19,8 @@ export const item_sel = $<HTMLSelectElement>("item_select");
 export const fake_sel = $<HTMLDivElement>("fake_item_select");
 export const solve_btn = $<HTMLButtonElement>("solve_btn");
 export const stop_btn = $<HTMLButtonElement>("stop_btn");
+export const view_btn = $<HTMLButtonElement>("view_btn");
+export const deposit_table = $<HTMLTableElement>("deposit_table");
 export const copy_link_btn = $<HTMLButtonElement>("copy_link_btn");
 
 export const status_box = $<HTMLDivElement>("status");
