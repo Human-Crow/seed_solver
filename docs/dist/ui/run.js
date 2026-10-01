@@ -1,6 +1,6 @@
 // One solve: get the world, run the solver worker, show progress and results, Stop.
 import { fetch_world } from "../world_api.js";
-import { seed_in, size_in, amount_in, gap_in, water_box, copy_link_btn } from "./dom.js";
+import { seed_in, size_in, amount_in, gap_in, water_box, copy_link_btn, solve_btn, view_btn } from "./dom.js";
 import { get_imported, import_warning } from "./import_world.js";
 import { set_blueprint_world } from "./blueprint.js";
 import { WORKER_SCRIPT } from "./config.js";
@@ -13,66 +13,97 @@ import { show_world, show_plants } from "./map_ui.js";
 import { evaluate, set_evaluation_world } from "./evaluator.js";
 let run = null;
 const NO_WATER = { count: 0, x: new Int32Array(0), y: new Int32Array(0) };
-export async function start() {
-    if (run && !run.finished)
-        return;
+/** the seed box is valid, or empty with an imported world */
+function check_seed() {
+    const seed = seed_in.value.trim();
+    if (/^[0-9A-Za-z]{1,12}$/.test(seed) || (get_imported() && !seed))
+        return true;
+    say("Enter a seed as the game shows it (letters and digits).", true);
+    return false;
+}
+/** get the world to show or solve: generated, or imported (then water + map come from the seed, if any) */
+async function load_world() {
     const imported = get_imported();
     const seed = seed_in.value.trim();
-    const has_seed = /^[0-9A-Za-z]{1,12}$/.test(seed);
-    if (!has_seed && !(imported && !seed)) {
-        say("Enter a seed as the game shows it (letters and digits).", true);
-        return;
+    if (!imported)
+        history.replaceState(null, "", page_link());
+    copy_link_btn.classList.toggle("hidden", !!imported); // an imported world has no link
+    say("Getting the world…");
+    const request = { seed, size: Number(size_in.value), amount: Number(amount_in.value), version: get_version() };
+    if (!imported) {
+        try {
+            return await fetch_world(request);
+        }
+        catch (e) {
+            say(`Could not get the world: ${e instanceof Error ? e.message : e}`, true);
+            return null;
+        }
     }
+    const world = {
+        seed: 0, gen2: imported.gen2 ?? request.version === "ios2", size: request.size, amount: request.amount,
+        deposits: imported.deposits, water: NO_WATER, map: null,
+    };
+    if (seed) {
+        try {
+            const gen = await fetch_world(request);
+            world.water = gen.water;
+            world.map = gen.map;
+        }
+        catch (e) {
+            import_warning(`No water or map (could not get seed ${seed}: ${e instanceof Error ? e.message : e}).`);
+        }
+    }
+    return world;
+}
+let viewing = false;
+/** the Best / Proven max / Gap / Time numbers only mean something while solving */
+const show_numbers = (on) => document.querySelector(".stat-grid")?.classList.toggle("hidden", !on);
+/** "Show map": only get the world and show it, no solving */
+export async function view() {
+    if ((run && !run.finished) || viewing || !check_seed())
+        return;
+    viewing = true;
+    show_numbers(false);
+    view_btn.disabled = solve_btn.disabled = true;
+    hide_result();
+    show_stats(undefined, undefined);
+    show_time(undefined);
+    try {
+        const world = await load_world();
+        if (world) {
+            show_world(world);
+            say(`${world.deposits.count.toLocaleString("en-US")} deposit tiles. Press Solve to place power plants.`);
+        }
+    }
+    finally {
+        viewing = false;
+        view_btn.disabled = solve_btn.disabled = false;
+    }
+}
+export async function start() {
+    if ((run && !run.finished) || viewing || !check_seed())
+        return;
     const gapPct = Number(gap_in.value);
     if (!Number.isFinite(gapPct) || gapPct < 0) {
         say("The gap must be a number of 0 or more.", true);
         return;
     }
-    if (!imported)
-        history.replaceState(null, "", page_link());
-    copy_link_btn.classList.toggle("hidden", !!imported); // an imported world has no link
+    const imported = get_imported(), seed = seed_in.value.trim();
     set_running(true);
+    show_numbers(true);
     hide_result();
     set_blueprint_world(`Power Plants ${imported ? (seed || imported.file) : seed} ${size_in.value}% ${amount_in.value}%`);
     show_stats(undefined, undefined);
     show_time(undefined);
-    say("Getting the world…");
-    const request = { seed, size: Number(size_in.value), amount: Number(amount_in.value), version: get_version() };
-    let world;
-    let note = "";
-    if (imported) {
-        // your deposits; water and the map come from the generated world with the same seed, if there is one
-        world = {
-            seed: 0, gen2: imported.gen2 ?? request.version === "ios2", size: request.size, amount: request.amount,
-            deposits: imported.deposits, water: NO_WATER, map: null,
-        };
-        if (has_seed) {
-            try {
-                const gen = await fetch_world(request);
-                world.water = gen.water;
-                world.map = gen.map;
-            }
-            catch (e) {
-                note = `No water or map (could not get seed ${seed}: ${e instanceof Error ? e.message : e}). `;
-            }
-        }
-    }
-    else {
-        try {
-            world = await fetch_world(request);
-        }
-        catch (e) {
-            set_running(false);
-            say(`Could not get the world: ${e instanceof Error ? e.message : e}`, true);
-            return;
-        }
+    const world = await load_world();
+    if (!world) {
+        set_running(false);
+        return;
     }
     const input = { gen2: world.gen2, deposits: world.deposits, water: water_box.checked ? NO_WATER : world.water };
     const settings = settings_now();
     show_world(world);
     set_evaluation_world(input, settings);
-    if (note)
-        import_warning(note.trim());
     const r = {
         world, settings, solver: new Worker(WORKER_SCRIPT, { type: "module" }), t0: performance.now(), timer: 0,
         best: null, bound: Infinity, shown: -1, finished: false,
