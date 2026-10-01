@@ -40,6 +40,9 @@ export class MapView {
     private pinch: { dist: number; scale: number } | null = null;
     private queued = false;
     showAreas = true;
+    onlyPartial = false;        // fade fully powered plants and their boost areas
+    onView: ((x: number, y: number) => void) | null = null;     // called after every redraw with the middle tile
+    private target: { x: number; y: number; until: number } | null = null;
     flip = false;
 
     constructor(private canvas: HTMLCanvasElement) {
@@ -103,6 +106,21 @@ export class MapView {
     zoom(factor: number) {
         const { width, height } = this.canvas.getBoundingClientRect();
         this.zoomAt(factor, width / 2, height / 2);
+    }
+
+    /** the tile in the middle of the map */
+    centerTile(): [number, number] {
+        return [Math.floor(this.cx), Math.floor(this.cy)];
+    }
+
+    /** centre the map on tile (x, y), zoom in to at least 12 screen pixels per tile, and mark the tile briefly */
+    goTo(x: number, y: number) {
+        this.cx = x + 0.5;
+        this.cy = y + 0.5;
+        this.scale = Math.min(40, Math.max(this.scale, 12));
+        this.target = { x, y, until: performance.now() + 2500 };
+        this.draw();
+        setTimeout(() => this.draw(), 2600);
     }
 
     private zoomAt(factor: number, sx: number, sy: number) {
@@ -193,9 +211,15 @@ export class MapView {
             ctx.setTransform(1, 0, 0, 1, 0, 0);
         }
 
+        // "only partly powered": fully powered plants and their areas are faded, the others drawn on top
+        const faded = (p: Plant) => this.onlyPartial && (p.power ?? 1) >= 1;
+        const plants = this.onlyPartial ? [...this.plants].sort((a, b) => Number(faded(b)) - Number(faded(a))) : this.plants;
+        const FADE = 0.15;
+
         // boost areas under everything else
         if (this.showAreas) {
-            for (const p of this.plants) {
+            for (const p of plants) {
+                ctx.globalAlpha = faded(p) ? FADE : 1;
                 const st = PLANT_STYLE[p.kind];
                 const aw = p.kind === "coal" ? AREA.coal.aw : (p.w === 3 ? 21 : 22);
                 const ah = p.kind === "coal" ? AREA.coal.ah : (p.w === 3 ? 22 : 21);
@@ -207,6 +231,7 @@ export class MapView {
                 const a = X(p.x - lx), b = X(p.x - lx + aw), c = Y(p.y - ty), d = Y(p.y - ty + ah);
                 ctx.strokeRect(Math.min(a, b), Math.min(c, d), Math.abs(b - a), Math.abs(d - c));
             }
+            ctx.globalAlpha = 1;
         }
 
         // Deposits and plants never get smaller than a few screen pixels, and sit on a dark halo,
@@ -235,7 +260,8 @@ export class MapView {
 
         // power plants on top: never smaller than 2.2 screen pixels per tile (so a 2x2 coal plant
         // is about 4 px and a nuclear plant 7-9 px when zoomed out), dark halo, yellow outline
-        for (const p of this.plants) {
+        for (const p of plants) {
+            ctx.globalAlpha = faded(p) ? FADE : 1;
             const st = PLANT_STYLE[p.kind];
             const mx = X(p.x + p.w / 2), my = Y(p.y + p.h / 2);
             const minTile = 2.2 * dpr;
@@ -244,11 +270,74 @@ export class MapView {
             if (!inView(mx, my, Math.max(pw, ph) + po)) continue;
             ctx.fillStyle = HALO;
             ctx.fillRect(mx - pw / 2 - po, my - ph / 2 - po, pw + 2 * po, ph + 2 * po);
+            // partly powered: filled from the bottom up to its share, like a fuel gauge
+            const power = p.power ?? 1;
+            if (power < 1) {
+                // the empty part: light for the dark coal plant, dark for the light nuclear plant
+                ctx.fillStyle = p.kind === "coal" ? "#c8c8c8" : "#1e1e1e";
+                ctx.fillRect(mx - pw / 2, my - ph / 2, pw, ph);
+            }
             ctx.fillStyle = st.fill;
-            ctx.fillRect(mx - pw / 2, my - ph / 2, pw, ph);
+            const fh = ph * power;
+            ctx.fillRect(mx - pw / 2, my + ph / 2 - fh, pw, fh);
             ctx.strokeStyle = "#fff08c";
             ctx.lineWidth = Math.max(dpr, s * 0.15);
             ctx.strokeRect(mx - pw / 2, my - ph / 2, pw, ph);
+            if (power < 1) {
+                // the percentage fills the middle 2 x 2 tiles of a coal plant / 3 x 3 of a nuclear plant, with a
+                // margin so it never touches the plant's border; it scales with the zoom (hidden when too small)
+                const tile = pw / Math.abs(p.w);
+                const margin = Math.max(ctx.lineWidth + 1.5 * dpr, 0.18 * tile);
+                const box = (p.kind === "coal" ? 2 : 3) * tile - 2 * margin;
+                const label = `${Math.round(power * 100)}%`;
+                ctx.font = "bold 100px sans-serif";
+                const m = ctx.measureText(label);
+                const textH = (m.actualBoundingBoxAscent + m.actualBoundingBoxDescent) || 72;
+                const size = 100 * Math.min(box / (m.width + 16), box / (textH + 16));     // + its outline (0.16 x size)
+                if (size >= 7 * dpr) {
+                    ctx.font = `bold ${size.toFixed(1)}px sans-serif`;
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    ctx.lineJoin = "round";
+                    ctx.lineWidth = Math.max(2 * dpr, size * 0.16);
+                    ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
+                    ctx.strokeText(label, mx, my);
+                    ctx.fillStyle = "#ffffff";
+                    ctx.fillText(label, mx, my);
+                }
+            }
         }
+        ctx.globalAlpha = 1;
+
+        // tile picked with "Go to": a bright frame for a moment
+        if (this.target && performance.now() < this.target.until) {
+            // the tile itself framed, and a ring around it so it is easy to see next to the crosshair
+            const t = this.target, tx = X(t.x + 0.5), ty = Y(t.y + 0.5);
+            ctx.lineWidth = 2 * dpr;
+            ctx.strokeStyle = "#ff4fd8";
+            ctx.strokeRect(tx - s / 2, ty - s / 2, s, s);
+            const r = Math.max(1.6 * s, 16 * dpr);
+            for (const [color, width] of [["rgba(0, 0, 0, 0.8)", 5 * dpr], ["#ff4fd8", 2.5 * dpr]] as const) {
+                ctx.strokeStyle = color;
+                ctx.lineWidth = width;
+                ctx.beginPath();
+                ctx.arc(tx, ty, r, 0, 2 * Math.PI);
+                ctx.stroke();
+            }
+        } else {
+            this.target = null;
+        }
+
+        // crosshair: the "Looking at" tile is the one under it
+        const cxp = canvas.width / 2, cyp = canvas.height / 2, arm = 7 * dpr;
+        for (const [color, width] of [["rgba(0, 0, 0, 0.7)", 3 * dpr], ["#ffffff", 1.2 * dpr]] as const) {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.beginPath();
+            ctx.moveTo(cxp - arm, cyp); ctx.lineTo(cxp + arm, cyp);
+            ctx.moveTo(cxp, cyp - arm); ctx.lineTo(cxp, cyp + arm);
+            ctx.stroke();
+        }
+        this.onView?.(...this.centerTile());
     }
 }

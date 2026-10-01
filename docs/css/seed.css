@@ -350,3 +350,123 @@ body {
     color: #9cdcfe;
     overflow-wrap: anywhere;
 }
+
+.partial-note {
+    width: var(--btn-w);
+    max-width: calc(100vw - 32px);
+    margin: 4px 0 0;
+    font-size: 20px;
+    color: #dcdcaa;
+}
+
+/* same look as before: the site's p style would make it white and 24px */
+.partial-note .partial-none {
+    margin: 0;
+    font-size: 20px;
+    color: #dcdcaa;
+}
+
+.partial-table .goto-cell {
+    padding-left: 10px;
+}
+
+.partial-goto-btn {
+    height: 30px;
+    padding: 0 10px;
+    font-size: 16px;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+}
+
+.partial-table {
+    margin: 4px 0 6px;
+}
+
+.partial-table td {
+    color: #dcdcaa;
+}
+
+/* map: "Looking at" label and "Go to" */
+.map-hud {
+    position: absolute;
+    left: 8px;
+    bottom: 8px;
+    padding: 2px 8px;
+    font-size: 16px;
+    font-variant-numeric: tabular-nums;
+    color: #fff;
+    background-color: rgba(30, 30, 30, 0.85);
+    border: 2px solid var(--border);
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+}
+
+.goto-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: var(--btn-w);
+    max-width: calc(100vw - 32px);
+    margin-bottom: 8px;
+}
+
+.goto-label {
+    font-size: 20px;
+    color: #bbb;
+    flex: none;
+}
+
+.coord-input {
+    flex: 1;
+    min-width: 0;
+    box-sizing: border-box;
+    height: var(--btn-h);
+    padding: 0 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+.input-bad {
+    border-color: var(--warn);
+}
+
+.goto-btn {
+    flex: none;
+    height: var(--btn-h);
+    padding: 0 16px;
+    font-size: 20px;
+}
+
+.goto-row-link {
+    cursor: pointer;
+}
+
+.goto-row-link:hover td {
+    background-color: var(--panel-hover);
+}
+
+/* while solving: everything that cannot be changed looks like World size / Resources (half transparent) */
+.button:disabled,
+.input:disabled,
+.mp-input-field:disabled,
+.mp-input-btn:disabled,
+.check-label-container.is-disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.button:disabled:hover,
+.mp-input-btn:disabled:hover,
+.input:disabled:hover {
+    background-color: var(--bg);
+}
+
+.check-label-container.is-disabled,
+.check-label-container.is-disabled .checkmark,
+.fake-select.is-disabled .selected {
+    pointer-events: none;
+}
+
+/* the extractor tier icon next to its locked input */
+.input-row:has(.mp-input-field:disabled) .input-icon {
+    opacity: 0.5;
+}

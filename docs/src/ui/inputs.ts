@@ -4,7 +4,7 @@ import { RECIPES, RAW_ITEMS } from "../solver/data.js";
 import type { SolverSettings } from "../solver/solve.js";
 import type { Version } from "../world_api.js";
 import {
-    seed_in, size_in, amount_in, tier_in, tier_img, gap_in, alt_box, boost_box, water_box, item_sel, fake_sel,
+    seed_in, size_in, amount_in, tier_in, tier_img, gap_in, alt_box, boost_box, water_box, partial_box, item_sel, fake_sel,
     solve_btn, stop_btn, view_btn, import_btn, import_clear_btn, random_btn,
 } from "./dom.js";
 import { pretty } from "./format.js";
@@ -25,6 +25,7 @@ export function settings_now(): SolverSettings {
         tier: Math.min(5, Math.max(1, Math.round(Number(tier_in.value)) || 5)),
         alt: alt_box.checked,
         boost: boost_box.checked,
+        partial: partial_box.checked,
         target: item_sel.value,
     };
 }
@@ -34,9 +35,16 @@ export function set_running(on: boolean) {
     solve_btn.classList.toggle("hidden", on);
     stop_btn.classList.toggle("hidden", !on);
     view_btn.classList.toggle("hidden", on);
-    for (const el of [seed_in, random_btn, tier_in, gap_in, alt_box, boost_box, water_box, import_btn, import_clear_btn]) el.disabled = on;
+    for (const el of [seed_in, random_btn, tier_in, gap_in, alt_box, boost_box, water_box, partial_box, import_btn, import_clear_btn]) el.disabled = on;
     document.querySelectorAll<HTMLInputElement>(".seg input").forEach((r) => (r.disabled = on));
     document.querySelectorAll<HTMLButtonElement>(".version-btn, .mp-input-btn").forEach((b) => (b.disabled = on));
+    // checkboxes: their label shows it (same look as everything else that is locked)
+    for (const box of [alt_box, boost_box, water_box, partial_box]) box.closest(".check-label-container")?.classList.toggle("is-disabled", on);
+    // the item picker
+    const picker = fake_sel.querySelector<HTMLButtonElement>(".selected");
+    if (picker) picker.disabled = on;
+    fake_sel.classList.toggle("is-disabled", on);
+    if (on) fake_sel.classList.remove("open");
 }
 
 

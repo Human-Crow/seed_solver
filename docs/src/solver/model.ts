@@ -10,6 +10,7 @@ export interface SolverSettings {
     tier: number;           // extractor tier 1..5
     alt: boolean;           // ALT recipes allowed
     boost: boolean;         // power plants allowed
+    partial?: boolean;      // plants may get only part of their fuel (and boost that share of the time)
     target: string;         // item to maximise per minute
 }
 

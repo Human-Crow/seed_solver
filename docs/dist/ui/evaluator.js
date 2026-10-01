@@ -1,9 +1,9 @@
 // A second worker scores every reported layout exactly (the solver cannot while it searches).
-// Only the newest layout is scored, one request at a time.
+// Every layout is scored, in order, one request at a time (a skipped one could have been the best).
 import { WORKER_SCRIPT } from "./config.js";
 let worker;
 let busy = false;
-let wanted = null;
+let queue = [];
 let token = {}; // changes with every new world; older answers are dropped
 let seq = 0;
 const pending = new Map();
@@ -26,19 +26,20 @@ export function init_evaluator() {
 /** the world and settings the next layouts belong to */
 export function set_evaluation_world(world, settings) {
     token = {};
-    wanted = null;
+    queue = [];
     worker.postMessage({ cmd: "world", world, settings });
 }
 export function evaluate(plants, done) {
-    wanted = { plants, done, token };
+    queue.push({ plants, done, token });
     pump();
 }
 function pump() {
-    if (busy || !wanted)
+    if (busy)
         return;
-    const w = wanted;
-    wanted = null;
-    if (w.token !== token)
+    let w = queue.shift();
+    while (w && w.token !== token)
+        w = queue.shift(); // skip layouts of an older world
+    if (!w)
         return;
     busy = true;
     const id = ++seq;

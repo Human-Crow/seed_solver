@@ -143,7 +143,7 @@ function on_solver(r: Run, m: { type: string; [k: string]: unknown }) {
         const rep = m.report as LayoutReport;
         r.best = rep;
         r.bound = m.type === "done" ? rep.bound : Math.min(r.bound, rep.bound);
-        show_plants(rep.plants);
+        // the map changes together with the result (in on_details), so both always show the same layout
         evaluate(rep.plants, (d, plants) => on_details(r, d, plants));
         if (m.type === "done") {
             const gap = rep.bound > 0 ? (rep.bound - rep.score) / rep.bound : 0;
@@ -182,5 +182,6 @@ function on_details(r: Run, d: LayoutDetails, plants: Plant[]) {
     if (r !== run || d.score + 1e-12 < r.shown) return;
     r.shown = d.score;
     show_stats(d.score, Number.isFinite(r.bound) ? Math.max(r.bound, d.score) : undefined);
+    show_plants(plants);
     show_result(r.settings, r.world.gen2, d, plants);
 }

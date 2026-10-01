@@ -16,9 +16,9 @@ export function calc_link(settings, gen2, d, ncoal, nnuc) {
         `t_ex:${settings.tier}`, `c_bst:${settings.boost ? 1 : 0}`, `n_bst:${settings.boost ? 1 : 0}`,
     ];
     if (settings.boost)
-        pairs.push(`c_pp:${ncoal}`, `n_pp:${nnuc}`);
+        pairs.push(`c_pp:${num(ncoal)}`, `n_pp:${num(nnuc)}`); // partly powered plants count for their share
     for (const item of RAW_ITEMS) {
-        const b = d.boosts[item], ex = b.nuclear + b.coal + b.none, k = RAW_KEYS[item];
+        const b = d.boosts[item], ex = Math.round(b.nuclear + b.coal + b.none), k = RAW_KEYS[item];
         pairs.push(`e_${k}:${ex}`);
         if (settings.boost)
             pairs.push(`c_${k}:${num(ex ? b.coal / ex : 0)}`, `n_${k}:${num(ex ? b.nuclear / ex : 0)}`);

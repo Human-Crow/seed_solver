@@ -9,6 +9,34 @@
 import { COAL_FUEL_PER_MIN, NUCLEAR_FUEL_PER_MIN, PLANT_SHAPES, RAW_ITEMS } from "./data.js";
 import { find_candidates } from "./candidates.js";
 import { Columns, RecipeModel, speed_table } from "./model.js";
+const POW_EPS = 1e-6;
+/** chosen plants and their powered shares from a solution vector (unpowered plants are left out) */
+function pick(nK, x, off, powVar, partial) {
+    const sel = [], pow = [];
+    for (let j = 0; j < nK; j++) {
+        if (x[off + j] <= 0.5)
+            continue;
+        let p = partial ? Math.min(1, Math.max(0, x[off + powVar(j)])) : 1;
+        if (p < POW_EPS)
+            continue;
+        if (p > 1 - POW_EPS)
+            p = 1;
+        sel.push(j);
+        pow.push(p);
+    }
+    return [sel, pow];
+}
+/**
+ * Share of the time a tile is nuclear / coal boosted, from whether a fully powered plant of each kind reaches it
+ * and the largest powered share of the partly powered ones. Worst case for partly powered plants: their on
+ * times overlap each other and the nuclear plant's, so they add nothing beyond the largest share.
+ */
+function shares(fullN, maxN, fullC, maxC) {
+    const n = fullN ? 1 : maxN;
+    const c = fullC ? 1 - n : Math.max(0, maxC - n);
+    return [n, c];
+}
+const layout_key = (l) => l.sel.map((j, k) => `${j}:${l.pow[k].toFixed(6)}`).join(",");
 // ---------------------------------------------------------------- one area of plant positions
 class Comp {
     cands;
@@ -25,8 +53,22 @@ class Comp {
     ub;
     rows = [];
     pricing = null;
-    constructor(cands, dtype, S) {
+    partial;
+    /** variable of plant j's powered share (the plant variable itself when shares are off) */
+    powVar(j) {
+        return this.partial ? this.nK + 2 * this.nD + j : j;
+    }
+    /** yes/no "plant j is fully powered" (only with partial power) */
+    fullVar(j) {
+        return this.nK + 2 * this.nD + this.nK + j;
+    }
+    /** integer variables: plants built, and with partial power the "fully powered" choices */
+    isInt(v) {
+        return v < this.nK || (this.partial && v >= this.nK + 2 * this.nD + this.nK);
+    }
+    constructor(cands, dtype, S, partial = false) {
         this.cands = cands;
+        this.partial = partial;
         const dset = new Set();
         for (const c of cands) {
             c.cover.forEach((d) => dset.add(d));
@@ -37,7 +79,7 @@ class Comp {
         const nK = cands.length, nD = this.deps.length;
         this.nK = nK;
         this.nD = nD;
-        this.nv = nK + 2 * nD;
+        this.nv = nK + 2 * nD + (partial ? 2 * nK : 0);
         this.dt = Uint8Array.from(this.deps.map((d) => dtype[d]));
         this.s0 = Float64Array.from(this.dt, (t) => S[t * 3]);
         this.sc = Float64Array.from(this.dt, (t) => S[t * 3 + 1]);
@@ -52,12 +94,17 @@ class Comp {
                 push(foot, di.get(d), j);
         });
         // variables: y[nK] (plant built), bn[nD], bc[nD] (share of time an extractor is nuclear / coal boosted)
+        // and, with partial power, p[nK] (share of the time plant j runs: the share of fuel it gets, p <= y)
+        // and f[nK] (plant j fully powered: p = 1). A plant that is not fully powered may share no boosted
+        // tile with any other plant, so its tiles are boosted exactly its share of the time, however the
+        // plants' on / off times line up (rows added by exclusive()). Fully powered plants may overlap.
+        const pv = (j) => this.powVar(j);
         for (let i = 0; i < nD; i++) {
             const n = covn.get(i), c = covc.get(i), f = foot.get(i) ?? [];
             if (n)
-                this.rows.push({ cols: [nK + i, ...n], vals: [1, ...n.map(() => -1)], hi: 0 });
+                this.rows.push({ cols: [nK + i, ...n.map(pv)], vals: [1, ...n.map(() => -1)], hi: 0 });
             if (c)
-                this.rows.push({ cols: [nK + nD + i, ...c], vals: [1, ...c.map(() => -1)], hi: 0 });
+                this.rows.push({ cols: [nK + nD + i, ...c.map(pv)], vals: [1, ...c.map(() => -1)], hi: 0 });
             const r = new Map([[nK + i, 1], [nK + nD + i, 1]]);
             for (const j of f)
                 r.set(j, (r.get(j) ?? 0) + 1);
@@ -86,9 +133,21 @@ class Comp {
             seen.add(key);
             this.rows.push({ cols: js, vals: js.map(() => 1), hi: 1 });
         }
+        if (partial) {
+            for (let j = 0; j < nK; j++) {
+                this.rows.push({ cols: [pv(j), j], vals: [1, -1], hi: 0 }); // p <= y
+                this.rows.push({ cols: [this.fullVar(j), pv(j)], vals: [1, -1], hi: 0 }); // f <= p
+            }
+            // "a plant that is not fully powered is the only plant on its tiles" is added only where it is
+            // needed, after a search found such a plant next to others (exclusive())
+        }
         this.ub = new Float64Array(this.nv);
-        for (let j = 0; j < nK; j++)
+        for (let j = 0; j < nK; j++) {
             this.ub[j] = 1;
+            this.ub[pv(j)] = 1;
+            if (partial)
+                this.ub[this.fullVar(j)] = 1;
+        }
         for (let i = 0; i < nD; i++) {
             this.ub[nK + i] = covn.has(i) ? 1 : 0;
             this.ub[nK + nD + i] = covc.has(i) ? 1 : 0;
@@ -105,10 +164,51 @@ class Comp {
         }
         cands.forEach((c, j) => {
             if (c.kind === 0)
-                this.G[4 * this.nv + j] -= COAL_FUEL_PER_MIN; // coal is raw item 4
+                this.G[4 * this.nv + pv(j)] -= COAL_FUEL_PER_MIN; // coal is raw item 4
             else
-                this.nfc[j] = NUCLEAR_FUEL_PER_MIN;
+                this.nfc[pv(j)] = NUCLEAR_FUEL_PER_MIN;
         });
+    }
+    neighbours = null;
+    exclusiveAll = false;
+    /** positions sharing a boosted tile with position j */
+    near(j) {
+        if (!this.neighbours) {
+            const by = new Map();
+            this.cands.forEach((c, k) => c.cover.forEach((d) => { let l = by.get(d); if (!l)
+                by.set(d, (l = [])); l.push(k); }));
+            const sets = this.cands.map(() => new Set());
+            for (const ks of by.values())
+                for (const a of ks)
+                    for (const b of ks)
+                        if (a !== b)
+                            sets[a].add(b);
+            this.neighbours = sets.map((st) => [...st]);
+        }
+        return this.neighbours[j];
+    }
+    /**
+     * If a layout has a partly powered plant in this area, every position of the area gets the rule
+     * "only partly powered when none of the positions sharing its tiles is built" (y_k + y_j - f_j <= 1), so
+     * the next search cannot just move the partial power to a neighbour. Returns how many plants broke it.
+     */
+    exclusive(l) {
+        const built = new Set(l.sel);
+        let broken = 0, partial = false;
+        l.sel.forEach((j, k) => {
+            if (l.pow[k] >= 1)
+                return;
+            partial = true;
+            if (this.near(j).some((q) => built.has(q)))
+                broken++;
+        });
+        if (partial && !this.exclusiveAll) {
+            this.exclusiveAll = true;
+            for (let j = 0; j < this.nK; j++)
+                for (const q of this.near(j))
+                    this.rows.push({ cols: [q, j, this.fullVar(j)], vals: [1, 1, -1], hi: 1 });
+        }
+        return broken;
     }
     /** column entries of variable v in this area's own rows */
     colsByVar() {
@@ -129,7 +229,7 @@ class Comp {
             const cols = new Columns();
             const byVar = this.colsByVar();
             for (let v = 0; v < this.nv; v++)
-                cols.add(byVar[v].rows, byVar[v].vals, 0, this.ub[v], cost[v], v < this.nK);
+                cols.add(byVar[v].rows, byVar[v].vals, 0, this.ub[v], cost[v], this.isInt(v));
             const m = H.createModel();
             m.passModel(cols.model(H, this.rows.length, this.rows.map(() => -Infinity), this.rows.map((r) => r.hi), true));
             m.options.set({ output_flag: false, mip_rel_gap: 1e-9 });
@@ -143,37 +243,48 @@ class Comp {
         if (run.modelStatus !== H.constants.modelStatus.optimal)
             return null;
         const x = m.getSolution().colValue;
-        const sel = [];
-        for (let j = 0; j < this.nK; j++)
-            if (x[j] > 0.5)
-                sel.push(j);
-        return [-m.getObjectiveValue(), this.layout(sel)];
+        const [sel, pow] = pick(this.nK, x, 0, (j) => this.powVar(j), this.partial);
+        return [-m.getObjectiveValue(), this.layout(sel, pow)];
     }
-    layout(sel) {
-        const nuc = new Set(), coal = new Set(), rem = new Set();
-        let ncoal = 0;
-        for (const j of sel) {
-            const c = this.cands[j];
-            if (c.kind === 1)
-                c.cover.forEach((d) => nuc.add(d));
-            else {
-                c.cover.forEach((d) => coal.add(d));
-                ncoal++;
-            }
-            c.foot.forEach((d) => rem.add(d));
-        }
-        const g = new Float64Array(7);
-        this.deps.forEach((d, i) => {
-            const t = this.dt[i];
-            if (rem.has(d))
-                g[t] -= this.s0[i];
-            else if (nuc.has(d))
-                g[t] += this.sn[i] - this.s0[i];
-            else if (coal.has(d))
-                g[t] += this.sc[i] - this.s0[i];
+    /**
+     * Resource gain of a layout. A tile is nuclear boosted for the summed share of the nuclear plants
+     * reaching it (at most all the time), coal boosted for the rest of the time the coal plants run.
+     * With every plant fully powered this is: nuclear wins, then coal.
+     */
+    layout(sel, pow = sel.map(() => 1)) {
+        const di = new Map(this.deps.map((d, i) => [d, i]));
+        const fullN = new Uint8Array(this.nD), fullC = new Uint8Array(this.nD), maxN = new Float64Array(this.nD), maxC = new Float64Array(this.nD);
+        const rem = new Uint8Array(this.nD);
+        let coalRun = 0, nucRun = 0;
+        sel.forEach((j, k) => {
+            const c = this.cands[j], p = pow[k], nuc = c.kind === 1;
+            c.cover.forEach((d) => {
+                const i = di.get(d);
+                if (p >= 1)
+                    (nuc ? fullN : fullC)[i] = 1;
+                else if (nuc)
+                    maxN[i] = Math.max(maxN[i], p);
+                else
+                    maxC[i] = Math.max(maxC[i], p);
+            });
+            c.foot.forEach((d) => { rem[di.get(d)] = 1; });
+            if (nuc)
+                nucRun += p;
+            else
+                coalRun += p;
         });
-        g[4] -= COAL_FUEL_PER_MIN * ncoal;
-        return { sel, g, nfc: NUCLEAR_FUEL_PER_MIN * (sel.length - ncoal) };
+        const g = new Float64Array(7);
+        for (let i = 0; i < this.nD; i++) {
+            const t = this.dt[i];
+            if (rem[i]) {
+                g[t] -= this.s0[i];
+                continue;
+            }
+            const [n, c] = shares(fullN[i], maxN[i], fullC[i], maxC[i]);
+            g[t] += n * (this.sn[i] - this.s0[i]) + c * (this.sc[i] - this.s0[i]);
+        }
+        g[4] -= COAL_FUEL_PER_MIN * coalRun;
+        return { sel, pow, g, nfc: NUCLEAR_FUEL_PER_MIN * nucRun };
     }
     dispose() {
         this.pricing?.dispose();
@@ -221,7 +332,7 @@ class Problem {
         cands.forEach((c, k) => { const r = find(k); let g = groups.get(r); if (!g)
             groups.set(r, (g = [])); g.push(c); });
         for (const g of groups.values())
-            this.comps.push(new Comp(g, dep.type, this.S));
+            this.comps.push(new Comp(g, dep.type, this.S, !!settings.partial));
     }
     /** item rows: lower bounds (raw rows: minus the unboosted output) */
     itemLower(extra) {
@@ -307,7 +418,7 @@ class Problem {
                 const order = rows.map((_, i) => i).sort((a, b) => rows[a] - rows[b]);
                 const rr = [...order.map((i) => rows[i]), ...byVar[v].rows.map((q) => q + rowBase)];
                 const vv = [...order.map((i) => vals[i]), ...byVar[v].vals];
-                cols.add(rr, vv, 0, c.ub[v], 0, v < c.nK);
+                cols.add(rr, vv, 0, c.ub[v], 0, c.isInt(v));
             }
             for (const r of c.rows) {
                 lower.push(-Infinity);
@@ -316,11 +427,8 @@ class Problem {
             rowBase += c.rows.length;
         }
         const layouts = (x) => this.comps.map((c, ci) => {
-            const sel = [];
-            for (let j = 0; j < c.nK; j++)
-                if (x[offsets[ci] + j] > 0.5)
-                    sel.push(j);
-            return c.layout(sel);
+            const [sel, pow] = pick(c.nK, x, offsets[ci], (j) => c.powVar(j), c.partial);
+            return c.layout(sel, pow);
         });
         const m = H.createModel();
         try {
@@ -350,10 +458,13 @@ class Problem {
     plants(lays) {
         const out = [];
         lays.forEach((l, ci) => {
-            for (const j of l.sel) {
+            l.sel.forEach((j, k) => {
                 const c = this.comps[ci].cands[j];
-                out.push({ kind: c.kind === 1 ? "nuclear" : "coal", x: c.x, y: c.y, w: c.w, h: c.h });
-            }
+                const p = { kind: c.kind === 1 ? "nuclear" : "coal", x: c.x, y: c.y, w: c.w, h: c.h };
+                if (l.pow[k] < 1)
+                    p.power = l.pow[k];
+                out.push(p);
+            });
         });
         return out;
     }
@@ -372,8 +483,20 @@ export function to_deposits(world) {
 /**
  * Solve a world. Reports every better layout through hooks.layout (the first one after step 1) and the
  * search state through hooks.progress. `gap`: stop when best >= proven maximum * (1 - gap).
+ * With partial power: first the usual full-power solve, then the search for partly powered plants starts from
+ * that layout, so the result is never worse. The first part's proven maximum is only for full power, so it is
+ * not reported.
  */
 export function solve(H, world, settings, gap, hooks) {
+    if (!settings.partial || !settings.boost)
+        return solve_core(H, world, { ...settings, partial: false }, gap, hooks, null);
+    const full = solve_core(H, world, { ...settings, partial: false }, gap, {
+        progress: (p) => hooks.progress({ step: p.step, message: `Full power first: ${p.message.charAt(0).toLowerCase()}${p.message.slice(1)}`, ...(p.best !== undefined ? { best: p.best } : {}) }),
+        layout: (l) => hooks.layout({ ...l, bound: Infinity }),
+    }, null);
+    return solve_core(H, world, settings, gap, hooks, full);
+}
+function solve_core(H, world, settings, gap, hooks, start) {
     const t0 = performance.now();
     const secs = () => ((performance.now() - t0) / 1000).toFixed(0) + " s";
     const dep = to_deposits(world);
@@ -383,9 +506,12 @@ export function solve(H, world, settings, gap, hooks) {
     try {
         const C = P.comps;
         hooks.progress({ step: "setup", message: `${cands.length} possible power plant spots in ${C.length} separate areas.` });
-        const empty = () => ({ sel: [], g: new Float64Array(7), nfc: 0 });
+        const empty = () => ({ sel: [], pow: [], g: new Float64Array(7), nfc: 0 });
         let bestLays = C.map(empty);
         let bestVal = -1, bound = 0;
+        let startPlants = null; // the full-power layout, while nothing beats it
+        const take = (v, lays) => { bestVal = v; bestLays = lays; startPlants = null; };
+        const bestPlants = () => startPlants ?? P.plants(bestLays);
         const closed = () => bound - bestVal <= gap * Math.max(1, Math.abs(bound));
         if (!C.length) {
             bestVal = P.evaluate([]);
@@ -403,7 +529,10 @@ export function solve(H, world, settings, gap, hooks) {
             const m = P.master(pool);
             if (!m)
                 break;
-            val = m.val;
+            // upper limit (Lagrange): the master's value plus what every area could still add at these prices.
+            // Without partial power that extra is 0 at the end; with it the area search is optimistic
+            // (partly powered plants may still overlap there), so the extra keeps the limit honest.
+            let extra = 0;
             const pi = Float64Array.from(P.M.rawRows, (row) => m.du[row]);
             const pnfc = m.du[P.M.fcRow];
             let added = 0;
@@ -411,13 +540,15 @@ export function solve(H, world, settings, gap, hooks) {
                 const got = comp.price(H, pi, pnfc);
                 if (!got)
                     return;
-                const key = got[1].sel.join(",");
+                extra += Math.max(0, got[0] - m.mu[ci]);
+                const key = layout_key(got[1]);
                 if (got[0] - m.mu[ci] > 1e-7 * Math.max(1, Math.abs(got[0])) && !known[ci].has(key)) {
                     pool[ci].push(got[1]);
                     known[ci].add(key);
                     added++;
                 }
             });
+            val = m.val + extra;
             hooks.progress({ step: "bound", message: `Working out the proven maximum: round ${round}, ${added} better layouts (${secs()})` });
             if (!added)
                 break;
@@ -437,28 +568,92 @@ export function solve(H, world, settings, gap, hooks) {
             });
         }
         bestVal = P.evaluate(bestLays);
-        hooks.layout({ score: bestVal, exact: true, bound, plants: P.plants(bestLays) });
-        // step 2: the full MIP closes the gap
-        if (!closed()) {
+        if (start && start.score >= bestVal) {
+            bestVal = start.score;
+            startPlants = start.plants;
+        }
+        hooks.layout({ score: bestVal, exact: true, bound, plants: bestPlants() });
+        // step 2: the full MIP closes the gap. With partial power: a partly powered plant must be the only plant
+        // on its tiles; that rule is added for the plants a search made partly powered, then it searches again.
+        for (let pass = 1; !closed(); pass++) {
             hooks.progress({ step: "search", message: "Searching for better layouts…", best: bestVal, bound });
-            const res = P.compact(gap, (score, b, lays) => {
+            const seenLays = []; // layouts found during this search (for the partial power rule)
+            const res = P.compact(gap, 
+            // no HiGHS calls inside HiGHS callbacks: report the search's own score; the page scores
+            // every reported layout exactly (overlapping partly powered plants: worst case)
+            (score, b, lays) => {
+                if (settings.partial)
+                    seenLays.push(lays);
+                // with partial power the search's own score can be optimistic (overlaps): report no more than
+                // the real best so far; the page shows the layout's exact score once it is scored
                 if (score > bestVal + 1e-12)
-                    hooks.layout({ score, exact: false, bound: Math.min(bound, b), plants: P.plants(lays) });
-            }, (best, b) => hooks.progress({ step: "search", message: `Searching for better layouts (${secs()})`, best: Math.max(best, bestVal), bound: Math.min(bound, b) }));
+                    hooks.layout({ score: settings.partial ? bestVal : score, exact: false, bound: Math.min(bound, b), plants: P.plants(lays) });
+            }, (best, b) => hooks.progress({ step: "search", message: `Searching for better layouts${pass > 1 ? ` (round ${pass})` : ""} (${secs()})`, best: Math.max(best, bestVal), bound: Math.min(bound, b) }));
             if (res.lays) {
                 const v = P.evaluate(res.lays);
-                if (v > bestVal) {
-                    bestVal = v;
-                    bestLays = res.lays;
+                if (v > bestVal)
+                    take(v, res.lays);
+            }
+            if (Number.isFinite(res.bound))
+                bound = Math.min(bound, Math.max(res.bound, bestVal));
+            if (!settings.partial || !res.lays) {
+                if (res.optimal)
+                    bound = Math.min(bound, Math.max(bestVal, res.score, Number.isFinite(res.bound) ? res.bound : res.score));
+                break;
+            }
+            // the best of the found layouts by their real score
+            let better = false;
+            for (const lays of seenLays) {
+                const v = P.evaluate(lays);
+                if (v > bestVal + 1e-12) {
+                    take(v, lays);
+                    better = true;
                 }
             }
-            if (res.optimal)
-                bound = Math.min(bound, Math.max(bestVal, res.score, Number.isFinite(res.bound) ? res.bound : res.score));
-            else if (Number.isFinite(res.bound))
-                bound = Math.min(bound, res.bound);
+            if (better)
+                hooks.layout({ score: bestVal, exact: true, bound, plants: bestPlants() });
+            // partly powered plants next to other plants: add their rule (for every layout seen) and search again
+            for (const lays of seenLays)
+                C.forEach((comp, ci) => comp.exclusive(lays[ci]));
+            const broken = C.reduce((a, comp, ci) => a + comp.exclusive(res.lays[ci]), 0);
+            if (!broken) {
+                if (res.optimal)
+                    bound = Math.min(bound, Math.max(bestVal, res.score, Number.isFinite(res.bound) ? res.bound : res.score));
+                break;
+            }
+            hooks.progress({ step: "search", message: `${broken} partly powered plant${broken > 1 ? "s" : ""} shared tiles with other plants; searching again (${secs()})`, best: bestVal, bound });
+        }
+        // clean-up: partly powered plants at full power or removed, where that scores better (or the same:
+        // fewer partly powered plants is simpler to build)
+        if (settings.partial && !startPlants) {
+            const before = bestVal;
+            for (let changed = true; changed;) {
+                changed = false;
+                for (let ci = 0; ci < C.length && !changed; ci++) {
+                    const l = bestLays[ci];
+                    for (let k = 0; k < l.sel.length && !changed; k++) {
+                        if (l.pow[k] >= 1)
+                            continue;
+                        for (const p of [1, 0]) {
+                            const sel = p ? l.sel : l.sel.filter((_, q) => q !== k);
+                            const pow = p ? l.pow.map((v, q) => (q === k ? 1 : v)) : l.pow.filter((_, q) => q !== k);
+                            const lays = bestLays.slice();
+                            lays[ci] = C[ci].layout(sel, pow);
+                            const v = P.evaluate(lays);
+                            if (v >= bestVal - 1e-12) {
+                                take(Math.max(v, bestVal), lays);
+                                changed = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (bestVal > before + 1e-12)
+                hooks.progress({ step: "search", message: `Tidied up the partly powered plants (${secs()})`, best: bestVal, bound });
         }
         bound = Math.max(bound, bestVal);
-        const rep = { score: bestVal, exact: true, bound, plants: P.plants(bestLays) };
+        const rep = { score: bestVal, exact: true, bound, plants: bestPlants() };
         hooks.layout(rep);
         return rep;
     }
@@ -473,18 +668,22 @@ export function evaluate_layout(H, world, settings, plants) {
     const S = speed_table(settings.tier, world.gen2);
     const boosts = boost_counts(dep, plants);
     const caps = new Float64Array(7);
-    const level = deposit_levels(dep, plants);
-    for (let i = 0; i < dep.count; i++)
-        if (level[i] >= 0)
-            caps[dep.type[i]] += S[dep.type[i] * 3 + level[i]];
-    const ncoal = plants.filter((p) => p.kind === "coal").length;
+    const sh = deposit_shares(dep, plants);
+    for (let i = 0; i < dep.count; i++) {
+        if (sh.removed[i])
+            continue;
+        const t = dep.type[i];
+        caps[t] += (1 - sh.nuclear[i] - sh.coal[i]) * S[t * 3] + sh.coal[i] * S[t * 3 + 1] + sh.nuclear[i] * S[t * 3 + 2];
+    }
+    const run_of = (kind) => plants.reduce((a, p) => a + (p.kind === kind ? p.power ?? 1 : 0), 0);
+    const ncoal = run_of("coal"), nnuc = run_of("nuclear");
     caps[4] -= COAL_FUEL_PER_MIN * ncoal;
     const cols = new Columns();
     for (let k = 0; k < M.nx; k++)
         cols.add(M.colRows[k], M.colVals[k], 0, Infinity, k === M.nx - 1 ? -1 : 0);
     const lo = new Array(M.nI).fill(0);
     M.rawRows.forEach((row, r) => { lo[row] = -caps[r]; });
-    lo[M.fcRow] = NUCLEAR_FUEL_PER_MIN * (plants.length - ncoal);
+    lo[M.fcRow] = NUCLEAR_FUEL_PER_MIN * nnuc;
     const m = H.createModel();
     try {
         m.passModel(cols.model(H, M.nI, lo, new Array(M.nI).fill(Infinity), false));
@@ -537,22 +736,61 @@ export function deposit_levels(dep, plants) {
         level[d] = -1;
     return level;
 }
+/**
+ * Per deposit: built over, and the share of the time it is nuclear / coal boosted (see shares()).
+ * Fully powered plants give 0 or 1 here, the same as deposit_levels.
+ */
+export function deposit_shares(dep, plants) {
+    const index = new Map();
+    for (let i = 0; i < dep.count; i++)
+        index.set(`${dep.x[i]},${dep.y[i]}`, i);
+    const n = dep.count;
+    const fullN = new Uint8Array(n), fullC = new Uint8Array(n), maxN = new Float64Array(n), maxC = new Float64Array(n);
+    const removed = new Uint8Array(n);
+    for (const p of plants) {
+        const shapes = p.kind === "coal" ? PLANT_SHAPES.coal : PLANT_SHAPES.nuclear;
+        const [, [aw, ah]] = shapes.find(([f]) => f[0] === p.w && f[1] === p.h);
+        const lx = (aw - p.w) >> 1, ty = (ah - p.h) >> 1;
+        const pw = p.power ?? 1, nuc = p.kind === "nuclear";
+        for (let a = p.x - lx; a < p.x - lx + aw; a++) {
+            for (let b = p.y - ty; b < p.y - ty + ah; b++) {
+                const d = index.get(`${a},${b}`);
+                if (d === undefined)
+                    continue;
+                if (a >= p.x && a < p.x + p.w && b >= p.y && b < p.y + p.h)
+                    removed[d] = 1;
+                if (pw >= 1)
+                    (nuc ? fullN : fullC)[d] = 1;
+                else if (nuc)
+                    maxN[d] = Math.max(maxN[d], pw);
+                else
+                    maxC[d] = Math.max(maxC[d], pw);
+            }
+        }
+    }
+    const nuclear = new Float64Array(n), coal = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+        if (removed[i])
+            continue;
+        [nuclear[i], coal[i]] = shares(fullN[i], maxN[i], fullC[i], maxC[i]);
+    }
+    return { nuclear, coal, removed };
+}
+/** extractors per resource by boost (shares of the time count as fractions of an extractor) */
 export function boost_counts(dep, plants) {
-    const level = deposit_levels(dep, plants);
+    const sh = deposit_shares(dep, plants);
     const out = {};
     for (const item of RAW_ITEMS)
         out[item] = { nuclear: 0, coal: 0, none: 0, removed: 0 };
     for (let i = 0; i < dep.count; i++) {
         const b = out[RAW_ITEMS[dep.type[i]]];
-        const l = level[i];
-        if (l < 0)
+        if (sh.removed[i]) {
             b.removed++;
-        else if (l === 2)
-            b.nuclear++;
-        else if (l === 1)
-            b.coal++;
-        else
-            b.none++;
+            continue;
+        }
+        b.nuclear += sh.nuclear[i];
+        b.coal += sh.coal[i];
+        b.none += 1 - sh.nuclear[i] - sh.coal[i];
     }
     return out;
 }

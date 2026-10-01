@@ -1,7 +1,7 @@
 // Settings in the page URL, and the "Copy link to this world" button.
 
 import type { Version } from "../world_api.js";
-import { seed_in, size_in, amount_in, tier_in, gap_in, alt_box, boost_box, water_box, item_sel, copy_link_btn } from "./dom.js";
+import { seed_in, size_in, amount_in, tier_in, gap_in, alt_box, boost_box, water_box, partial_box, item_sel, copy_link_btn } from "./dom.js";
 import { get_version, set_version, sync_segs } from "./inputs.js";
 
 export function read_url() {
@@ -26,6 +26,7 @@ export function read_url() {
     if (get("pp")) boost_box.checked = get("pp") !== "0";
     if (get("gap")) gap_in.value = get("gap")!;
     if (get("water")) water_box.checked = get("water") === "0";
+    if (get("partial")) partial_box.checked = get("partial") === "1";
 }
 
 export function page_link(): string {
@@ -35,6 +36,7 @@ export function page_link(): string {
         gap: gap_in.value,
     });
     if (water_box.checked) p.set("water", "0");
+    if (partial_box.checked) p.set("partial", "1");
     const worker = new URLSearchParams(location.search).get("worker");     // local testing only
     if (worker) p.set("worker", worker);
     return `${location.origin}${location.pathname}?${p}`;

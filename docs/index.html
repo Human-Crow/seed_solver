@@ -6,8 +6,8 @@
     <title>Builderment Seed Solver</title>
 
     <link rel="icon" type="image/x-icon" href="favicon.ico" />
-    <link rel="stylesheet" href="css/main.css?v=1.4.0" />
-    <link rel="stylesheet" href="css/seed.css?v=1.4.0" />
+    <link rel="stylesheet" href="css/main.css?v=1.6.3" />
+    <link rel="stylesheet" href="css/seed.css?v=1.6.3" />
 </head>
 <body>
     <h1>Builderment Seed Solver</h1>
@@ -33,7 +33,7 @@
         <input type="hidden" id="size_in" value="100">
     </div>
     <div class="field">
-        <span class="field-label" id="amount_lbl">Resource amount</span>
+        <span class="field-label" id="amount_lbl">Resources</span>
         <div class="seg" role="radiogroup" aria-labelledby="amount_lbl" data-for="amount_in" data-values="50,75,100,150,200"></div>
         <input type="hidden" id="amount_in" value="100">
     </div>
@@ -111,7 +111,13 @@ Iron Ore, 4, 5
                 <input type="checkbox" id="water_box">
                 <span class="checkmark"></span>
             </label>
+            <label class="check-label-container">
+                Partly powered plants
+                <input type="checkbox" id="partial_box">
+                <span class="checkmark"></span>
+            </label>
         </div>
+        <p class="help-note small-print">Partly powered plants: a plant may get only part of its fuel, and then boosts that share of the time. Where it shares tiles with other partly powered plants, the worst case is counted. Takes longer (use a larger gap or Stop); the result is never worse than without.</p>
     </details>
 
     <div class="spacer"></div>
@@ -136,6 +142,7 @@ Iron Ore, 4, 5
         <p class="header-label">Result:</p>
         <p class="result-score"><img class="item-img" id="result_img" src="assets/Earth_Token.png" alt=""><span id="result_score"></span></p>
         <p id="result_note" class="help-note"></p>
+        <div id="partial_note" class="partial-note hidden"></div>
         <div class="spacer"></div>
         <a id="calc_link" class="button norm-button link-button" href="#" target="_blank" rel="noopener">Open in Alt Calculator</a>
         <button class="button norm-button" id="blp_btn">Make Blueprint</button>
@@ -169,11 +176,23 @@ Iron Ore, 4, 5
                 <button class="button map-btn" id="zoom_out_btn" aria-label="Zoom out">−</button>
                 <button class="button map-btn" id="zoom_fit_btn" aria-label="Show everything">⤢</button>
             </div>
+            <div id="map_hud" class="map-hud">Looking at 0, 0</div>
+        </div>
+        <div class="goto-row">
+            <span class="goto-label">Go to</span>
+            <input id="goto_x" class="input coord-input" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="x" aria-label="x">
+            <input id="goto_y" class="input coord-input" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="y" aria-label="y">
+            <button class="button goto-btn" id="goto_btn" type="button">Go</button>
         </div>
         <div class="checkbox-container">
             <label class="check-label-container">
                 Boost areas
                 <input type="checkbox" id="areas_box" checked>
+                <span class="checkmark"></span>
+            </label>
+            <label class="check-label-container hidden" id="only_partial_label">
+                Only partly powered
+                <input type="checkbox" id="only_partial_box">
                 <span class="checkmark"></span>
             </label>
         </div>
@@ -183,6 +202,6 @@ Iron Ore, 4, 5
     <div class="spacer"></div>
     <div class="bottom-space"></div>
 
-    <script type="module" src="dist/main.js?v=1.4.0"></script>
+    <script type="module" src="dist/main.js?v=1.6.3"></script>
 </body>
 </html>
