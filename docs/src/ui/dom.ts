@@ -3,6 +3,7 @@
 export const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 export const seed_in = $<HTMLInputElement>("seed_in");
+export const random_btn = $<HTMLButtonElement>("random_btn");
 export const size_in = $<HTMLInputElement>("size_in");
 export const amount_in = $<HTMLInputElement>("amount_in");
 export const tier_in = $<HTMLInputElement>("tier_in");

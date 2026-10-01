@@ -7,7 +7,7 @@ import { get_imported, import_warning } from "./import_world.js";
 import { set_blueprint_world } from "./blueprint.js";
 import { WORKER_SCRIPT } from "./config.js";
 import { fmt_gap } from "./format.js";
-import { get_version, set_running, settings_now } from "./inputs.js";
+import { get_version, set_running, settings_now, random_seed } from "./inputs.js";
 import { page_link } from "./url.js";
 import { say, show_stats, show_time } from "./status.js";
 import { hide_result, show_result } from "./result.js";
@@ -32,6 +32,7 @@ const NO_WATER = { count: 0, x: new Int32Array(0), y: new Int32Array(0) };
 
 /** the seed box is valid, or empty with an imported world */
 function check_seed(): boolean {
+    if (!seed_in.value.trim() && !get_imported()) seed_in.value = random_seed();
     const seed = seed_in.value.trim();
     if (/^[0-9A-Za-z]{1,12}$/.test(seed) || (get_imported() && !seed)) return true;
     say("Enter a seed as the game shows it (letters and digits).", true);

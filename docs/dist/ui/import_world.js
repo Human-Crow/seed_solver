@@ -11,7 +11,7 @@
 // Commas, semicolons, tabs or spaces separate the values. Lines starting with # are ignored.
 // The CSV from the Builderment Seed Map page (header "x,y,resource") also works.
 import { seed_in, size_in, amount_in, import_btn, import_file, import_clear_btn, import_note } from "./dom.js";
-import { get_version, set_version } from "./inputs.js";
+import { get_version, set_version, sync_segs } from "./inputs.js";
 const NAME_TO_ID = {
     wood: 11, stone: 12, iron: 13, copper: 14, coal: 15, wolframite: 16, tungsten: 16, uranium: 17,
 };
@@ -189,6 +189,7 @@ function use(w) {
         size_in.value = String(w.size);
     if (w.amount !== null)
         amount_in.value = String(w.amount);
+    sync_segs();
     set_version(imported_version(w, get_version()));
     import_clear_btn.classList.remove("hidden");
     const extra = [

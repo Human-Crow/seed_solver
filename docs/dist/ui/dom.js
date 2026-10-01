@@ -1,6 +1,7 @@
 // Page elements used by the scripts.
 export const $ = (id) => document.getElementById(id);
 export const seed_in = $("seed_in");
+export const random_btn = $("random_btn");
 export const size_in = $("size_in");
 export const amount_in = $("amount_in");
 export const tier_in = $("tier_in");

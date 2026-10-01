@@ -1,6 +1,6 @@
 // Inputs: item picker, +/- buttons, version buttons, and reading the solver settings.
 import { RECIPES, RAW_ITEMS } from "../solver/data.js";
-import { seed_in, size_in, amount_in, tier_in, tier_img, gap_in, alt_box, boost_box, water_box, item_sel, fake_sel, solve_btn, stop_btn, view_btn, import_btn, import_clear_btn, } from "./dom.js";
+import { seed_in, tier_in, tier_img, gap_in, alt_box, boost_box, water_box, item_sel, fake_sel, solve_btn, stop_btn, view_btn, import_btn, import_clear_btn, random_btn, } from "./dom.js";
 import { pretty } from "./format.js";
 let version = "steam";
 export function get_version() {
@@ -23,9 +23,48 @@ export function set_running(on) {
     solve_btn.classList.toggle("hidden", on);
     stop_btn.classList.toggle("hidden", !on);
     view_btn.classList.toggle("hidden", on);
-    for (const el of [seed_in, size_in, amount_in, tier_in, gap_in, alt_box, boost_box, water_box, import_btn, import_clear_btn])
+    for (const el of [seed_in, random_btn, tier_in, gap_in, alt_box, boost_box, water_box, import_btn, import_clear_btn])
         el.disabled = on;
+    document.querySelectorAll(".seg input").forEach((r) => (r.disabled = on));
     document.querySelectorAll(".version-btn, .mp-input-btn").forEach((b) => (b.disabled = on));
+}
+// ---- seed ----
+const B62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+/** a random seed as the game shows it: base62 of a 32-bit number (0 .. 4gfFC3) */
+export function random_seed() {
+    let n = crypto.getRandomValues(new Uint32Array(1))[0], s = "";
+    do {
+        s = B62[n % 62] + s;
+        n = Math.floor(n / 62);
+    } while (n > 0);
+    return s;
+}
+// ---- World size / Resources: segmented buttons that write into a hidden input ----
+function init_segs() {
+    document.querySelectorAll(".seg[data-for]").forEach((seg) => {
+        const input = document.getElementById(seg.dataset.for);
+        for (const v of seg.dataset.values.split(",")) {
+            const label = document.createElement("label");
+            const radio = document.createElement("input");
+            radio.type = "radio";
+            radio.name = seg.dataset.for;
+            radio.value = v;
+            radio.addEventListener("change", () => { if (radio.checked)
+                input.value = v; });
+            const span = document.createElement("span");
+            span.textContent = `${v}%`;
+            label.append(radio, span);
+            seg.appendChild(label);
+        }
+    });
+    sync_segs();
+}
+/** show the hidden inputs' values on the buttons (after the URL or an import changed them) */
+export function sync_segs() {
+    document.querySelectorAll(".seg[data-for]").forEach((seg) => {
+        const value = document.getElementById(seg.dataset.for).value;
+        seg.querySelectorAll("input").forEach((r) => (r.checked = r.value === value));
+    });
 }
 function fill_items() {
     const names = new Set(RAW_ITEMS);
@@ -105,6 +144,8 @@ function init_min_plus() {
     });
 }
 export function init_inputs() {
+    init_segs();
+    random_btn.addEventListener("click", () => { seed_in.value = random_seed(); });
     fill_items();
     init_fake_select();
     init_min_plus();

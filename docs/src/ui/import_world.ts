@@ -13,7 +13,7 @@
 
 import type { Version } from "../world_api.js";
 import { seed_in, size_in, amount_in, import_btn, import_file, import_clear_btn, import_note } from "./dom.js";
-import { get_version, set_version } from "./inputs.js";
+import { get_version, set_version, sync_segs } from "./inputs.js";
 
 export interface ImportedWorld {
     file: string;
@@ -180,6 +180,7 @@ function use(w: ImportedWorld) {
     seed_in.value = w.seed ?? "";          // no seed: water and map stay unknown unless you type one
     if (w.size !== null) size_in.value = String(w.size);
     if (w.amount !== null) amount_in.value = String(w.amount);
+    sync_segs();
     set_version(imported_version(w, get_version()));
     import_clear_btn.classList.remove("hidden");
     const extra = [

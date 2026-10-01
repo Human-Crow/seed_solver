@@ -2,7 +2,7 @@
 
 import type { Version } from "../world_api.js";
 import { seed_in, size_in, amount_in, tier_in, gap_in, alt_box, boost_box, water_box, item_sel, copy_link_btn } from "./dom.js";
-import { get_version, set_version } from "./inputs.js";
+import { get_version, set_version, sync_segs } from "./inputs.js";
 
 export function read_url() {
     const p = new URLSearchParams(location.search);
@@ -10,6 +10,7 @@ export function read_url() {
     if (get("seed")) seed_in.value = get("seed")!;
     if (get("size")) size_in.value = get("size")!;
     if (get("res")) amount_in.value = get("res")!;
+    sync_segs();
     const v = get("ver");
     set_version(v === "ios1" || v === "ios2" ? (v as Version) : "steam");
     const item = get("item");

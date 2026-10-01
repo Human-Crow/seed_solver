@@ -6,8 +6,8 @@
     <title>Builderment Seed Solver</title>
 
     <link rel="icon" type="image/x-icon" href="favicon.ico" />
-    <link rel="stylesheet" href="css/main.css?v=1.3.2" />
-    <link rel="stylesheet" href="css/seed.css?v=1.3.2" />
+    <link rel="stylesheet" href="css/main.css?v=1.4.0" />
+    <link rel="stylesheet" href="css/seed.css?v=1.4.0" />
 </head>
 <body>
     <h1>Builderment Seed Solver</h1>
@@ -20,27 +20,22 @@
 
     <p class="header-label">World:</p>
     <div class="spacer"></div>
-    <div class="input-container">
-        <div class="input-row">
-            <label class="input-label" for="seed_in">Seed</label>
-            <input id="seed_in" class="input seed-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="12" placeholder="e.g. Nhvc"/>
+    <div class="field">
+        <label class="field-label" for="seed_in">Seed</label>
+        <div class="seed-row">
+            <input id="seed_in" class="input seed-input" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="12" placeholder="random if empty"/>
+            <button class="button seed-random-btn" id="random_btn" type="button">Random</button>
         </div>
-        <div class="input-row">
-            <label class="input-label" for="size_in">World Size %</label>
-            <div class="min-plus-input">
-                <input id="size_in" class="mp-input-field" type="number" inputmode="numeric" min="50" max="200" step="25" value="100" data-values="50,75,100,150,200"/>
-                <button class="mp-input-btn" data-action="decrease">−</button>
-                <button class="mp-input-btn" data-action="increase">+</button>
-            </div>
-        </div>
-        <div class="input-row">
-            <label class="input-label" for="amount_in">Resources %</label>
-            <div class="min-plus-input">
-                <input id="amount_in" class="mp-input-field" type="number" inputmode="numeric" min="50" max="200" step="25" value="100" data-values="50,75,100,150,200"/>
-                <button class="mp-input-btn" data-action="decrease">−</button>
-                <button class="mp-input-btn" data-action="increase">+</button>
-            </div>
-        </div>
+    </div>
+    <div class="field">
+        <span class="field-label" id="size_lbl">World size</span>
+        <div class="seg" role="radiogroup" aria-labelledby="size_lbl" data-for="size_in" data-values="50,75,100,150,200"></div>
+        <input type="hidden" id="size_in" value="100">
+    </div>
+    <div class="field">
+        <span class="field-label" id="amount_lbl">Resource amount</span>
+        <div class="seg" role="radiogroup" aria-labelledby="amount_lbl" data-for="amount_in" data-values="50,75,100,150,200"></div>
+        <input type="hidden" id="amount_in" value="100">
     </div>
     <div class="spacer"></div>
     <div class="flex-block version-block">
@@ -188,6 +183,6 @@ Iron Ore, 4, 5
     <div class="spacer"></div>
     <div class="bottom-space"></div>
 
-    <script type="module" src="dist/main.js?v=1.3.2"></script>
+    <script type="module" src="dist/main.js?v=1.4.0"></script>
 </body>
 </html>
