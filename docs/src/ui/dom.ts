@@ -22,6 +22,7 @@ export const stop_btn = $<HTMLButtonElement>("stop_btn");
 export const view_btn = $<HTMLButtonElement>("view_btn");
 export const deposit_table = $<HTMLTableElement>("deposit_table");
 export const deposit_block = $<HTMLDivElement>("deposit_block");
+export const calc_link_world_a = $<HTMLAnchorElement>("calc_link_world");
 export const copy_link_btn = $<HTMLButtonElement>("copy_link_btn");
 
 export const status_box = $<HTMLDivElement>("status");

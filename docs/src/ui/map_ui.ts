@@ -3,7 +3,9 @@
 import { MapView, DEPOSIT_STYLE, PLANT_STYLE } from "../map.js";
 import type { World } from "../world_api.js";
 import type { Plant } from "../solver/solve.js";
-import { map_block, map_canvas, zoom_in_btn, zoom_out_btn, zoom_fit_btn, areas_box, legend, deposit_table, deposit_block } from "./dom.js";
+import { map_block, map_canvas, zoom_in_btn, zoom_out_btn, zoom_fit_btn, areas_box, legend, deposit_table, deposit_block, calc_link_world_a } from "./dom.js";
+import { settings_now } from "./inputs.js";
+import { calc_link_world } from "./calc_link.js";
 import { RAW_ITEMS } from "../solver/data.js";
 import { pretty } from "./format.js";
 
@@ -14,6 +16,8 @@ export function show_world(world: World) {
     view.setWorld(world);
     show_deposits(world);
 }
+
+let shown: { gen2: boolean; tiles: number[] } | null = null;
 
 // deposit tiles per resource
 function show_deposits(world: World) {
@@ -29,6 +33,13 @@ function show_deposits(world: World) {
         `<td class="num">${tiles[k]}</td></tr>`).join("");
     deposit_table.innerHTML = head + rows;
     deposit_block.classList.remove("hidden");
+    shown = { gen2: world.gen2, tiles };
+    update_world_link();
+}
+
+/** the calculator link uses the settings at the moment it is opened */
+function update_world_link() {
+    if (shown) calc_link_world_a.href = calc_link_world(settings_now(), shown.gen2, shown.tiles);
 }
 
 export function show_plants(plants: Plant[]) {
@@ -45,6 +56,7 @@ function draw_legend() {
 
 export function init_map() {
     draw_legend();
+    calc_link_world_a.addEventListener("click", update_world_link);
     zoom_in_btn.addEventListener("click", () => view.zoom(1.6));
     zoom_out_btn.addEventListener("click", () => view.zoom(1 / 1.6));
     zoom_fit_btn.addEventListener("click", () => view.fit());

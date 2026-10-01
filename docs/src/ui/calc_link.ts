@@ -37,3 +37,17 @@ export function calc_link(settings: SolverSettings, gen2: boolean, d: LayoutDeta
     }
     return `${CALC_URL}?bulk=${pairs.join(",")}`;
 }
+
+/**
+ * Link for a world that was only shown (not solved): the settings and every deposit tile as an extractor.
+ * No power plant counts, boost shares or ALT ratios: those only exist after solving.
+ * @param tiles deposit tiles per resource, in RAW_ITEMS order
+ */
+export function calc_link_world(settings: SolverSettings, gen2: boolean, tiles: number[]): string {
+    const pairs: string[] = [
+        "mode:Resource", `item:${settings.target}`, `alt:${settings.alt ? 1 : 0}`, `gen2:${gen2 ? 1 : 0}`,
+        `t_ex:${settings.tier}`, `c_bst:${settings.boost ? 1 : 0}`, `n_bst:${settings.boost ? 1 : 0}`,
+    ];
+    RAW_ITEMS.forEach((item, k) => pairs.push(`e_${RAW_KEYS[item]}:${tiles[k] ?? 0}`));
+    return `${CALC_URL}?bulk=${pairs.join(",")}`;
+}

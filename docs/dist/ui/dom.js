@@ -20,6 +20,7 @@ export const stop_btn = $("stop_btn");
 export const view_btn = $("view_btn");
 export const deposit_table = $("deposit_table");
 export const deposit_block = $("deposit_block");
+export const calc_link_world_a = $("calc_link_world");
 export const copy_link_btn = $("copy_link_btn");
 export const status_box = $("status");
 export const status_text = $("status_text");
