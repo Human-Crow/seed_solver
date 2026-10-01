@@ -3,7 +3,7 @@
 import { MapView, DEPOSIT_STYLE, PLANT_STYLE } from "../map.js";
 import type { World } from "../world_api.js";
 import type { Plant } from "../solver/solve.js";
-import { map_block, map_canvas, zoom_in_btn, zoom_out_btn, zoom_fit_btn, areas_box, legend, deposit_table } from "./dom.js";
+import { map_block, map_canvas, zoom_in_btn, zoom_out_btn, zoom_fit_btn, areas_box, legend, deposit_table, deposit_block } from "./dom.js";
 import { RAW_ITEMS } from "../solver/data.js";
 import { pretty } from "./format.js";
 
@@ -15,21 +15,20 @@ export function show_world(world: World) {
     show_deposits(world);
 }
 
-// deposit tiles per resource, and how far the nearest one is from the middle of the world (0, 0)
+// deposit tiles per resource
 function show_deposits(world: World) {
     const d = world.deposits;
-    const tiles = new Array<number>(7).fill(0), nearest = new Array<number>(7).fill(Infinity);
+    const tiles = new Array<number>(7).fill(0);
     for (let i = 0; i < d.count; i++) {
         const k = d.id[i]! - 11;
-        if (k < 0 || k > 6) continue;
-        tiles[k]!++;
-        nearest[k] = Math.min(nearest[k]!, Math.hypot(d.x[i]!, d.y[i]!));
+        if (k >= 0 && k <= 6) tiles[k]!++;
     }
-    const head = `<tr><th></th><th class="num">Tiles</th><th class="num" title="Distance from the middle of the world">Nearest</th></tr>`;
+    const head = `<tr><th></th><th class="num">Tiles</th></tr>`;
     const rows = RAW_ITEMS.map((item, k) =>
         `<tr><td><img class="item-img" src="assets/${item}.png" alt="${pretty(item)}" title="${pretty(item)}"></td>` +
-        `<td class="num">${tiles[k]}</td><td class="num">${Number.isFinite(nearest[k]!) ? Math.round(nearest[k]!) : "–"}</td></tr>`).join("");
+        `<td class="num">${tiles[k]}</td></tr>`).join("");
     deposit_table.innerHTML = head + rows;
+    deposit_block.classList.remove("hidden");
 }
 
 export function show_plants(plants: Plant[]) {

@@ -1,6 +1,6 @@
 // Result block: score, power plants, deposits per resource and the calculator link.
 import { RAW_ITEMS } from "../solver/data.js";
-import { result_block, result_img, result_score, result_note, boost_table, calc_link_a } from "./dom.js";
+import { result_block, result_img, result_score, result_note, boost_table, calc_link_a, deposit_block } from "./dom.js";
 import { fmt, pretty } from "./format.js";
 import { calc_link } from "./calc_link.js";
 import { set_blueprint_plants } from "./blueprint.js";
@@ -9,6 +9,7 @@ export function hide_result() {
 }
 export function show_result(settings, gen2, d, plants) {
     result_block.classList.remove("hidden");
+    deposit_block.classList.add("hidden"); // one table at a time: the boost table has the same rows
     const target = settings.target;
     result_img.src = `assets/${target}.png`;
     result_score.textContent = `${fmt(d.score)} ${pretty(target)} per minute`;
