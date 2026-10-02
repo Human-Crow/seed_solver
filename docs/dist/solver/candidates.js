@@ -1,7 +1,8 @@
 // Candidate power plant positions: every land position whose boosted square reaches a deposit.
 // Positions that cover the same deposits and build over the same deposits are merged into one class;
 // a class is dropped when another class of the same fuel covers everything it covers and builds over
-// no more. Same rules as the Python solver's _candidates().
+// no more. Same rules as the Python solver's _candidates(). This reduction ignores that plants cannot
+// overlap, so it is only exact for a search without that rule (see solve.ts / realize.ts).
 import { PLANT_SHAPES } from "./data.js";
 // groups of deposits no plant square can connect (squares are at most 22 wide)
 const LINK = 24;
@@ -56,7 +57,8 @@ function rand32(seed) {
 /**
  * @param water every water tile within 12 tiles of a deposit (the only tiles a footprint can use)
  */
-export function find_candidates(dep, water, reduce = true) {
+/** reduce: merge positions with the same effect (one kept); dominance: also drop dominated classes */
+export function find_candidates(dep, water, reduce = true, dominance = reduce) {
     const out = [];
     const rnd = rand32(12345);
     const h1 = new Int32Array(dep.count), h2 = new Int32Array(dep.count);
@@ -152,7 +154,7 @@ export function find_candidates(dep, water, reduce = true) {
             let stamp = 0;
             for (const r of reps) {
                 let dominated = false;
-                if (reduce && r.cover.length) {
+                if (dominance && r.cover.length) {
                     stamp++;
                     for (const d of r.foot)
                         mark[d] = stamp; // r's footprint

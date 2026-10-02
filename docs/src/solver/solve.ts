@@ -1,6 +1,10 @@
 // Exact production solver (port of builderment_solver.py): the most target items per minute a world can
 // support, with real coal / nuclear power plants on real positions.
 //
+// The plant spots are reduced (spots with the same effect merged, spots another spot beats dropped). That is only
+// safe without the rule "plants never overlap", so the areas are solved without it: the maximum is then a true
+// upper limit. Each layout is then placed on real, non-overlapping positions that are at least as good
+// (realize.ts) and scored exactly; those placed layouts are what is reported.
 // The plant positions split into independent areas ("components": positions that share deposits or tiles).
 // Step 1, column generation: a master LP picks the recipe mix and, per area, a mix of known layouts; a small
 // MIP per area finds the layout worth most at the master's resource prices, until nothing improves the
@@ -10,6 +14,7 @@
 import { COAL_FUEL_PER_MIN, NUCLEAR_FUEL_PER_MIN, PLANT_SHAPES, RAW_ITEMS } from "./data.js";
 import { find_candidates, type Cand, type Deposits } from "./candidates.js";
 import { Columns, RecipeModel, speed_table, type SolverSettings } from "./model.js";
+import { Positions, realize, type Placed } from "./realize.js";
 import type { HighsModel, HighsRuntime } from "./highs.js";
 
 export type { SolverSettings } from "./model.js";
@@ -114,7 +119,7 @@ class Comp {
         return v < this.nK || (this.partial && v >= this.nK + 2 * this.nD + this.nK);
     }
 
-    constructor(readonly cands: Cand[], dtype: Uint8Array, S: Float64Array, partial = false) {
+    constructor(readonly cands: Cand[], dtype: Uint8Array, S: Float64Array, partial = false, overlapRule = true) {
         this.partial = partial;
         const dset = new Set<number>();
         for (const c of cands) { c.cover.forEach((d) => dset.add(d)); c.foot.forEach((d) => dset.add(d)); }
@@ -160,7 +165,7 @@ class Comp {
             }
         });
         const seen = new Set<string>();
-        for (const js of tiles.values()) {
+        for (const js of overlapRule ? tiles.values() : []) {
             if (js.length < 2) continue;
             const key = js.join(",");
             if (seen.has(key)) continue;
@@ -328,7 +333,7 @@ class Problem {
         });
         const groups = new Map<number, Cand[]>();
         cands.forEach((c, k) => { const r = find(k); let g = groups.get(r); if (!g) groups.set(r, (g = [])); g.push(c); });
-        for (const g of groups.values()) this.comps.push(new Comp(g, dep.type, this.S, !!settings.partial));
+        for (const g of groups.values()) this.comps.push(new Comp(g, dep.type, this.S, !!settings.partial, settings.spots === "classes" || settings.spots === "all"));
     }
 
     /** item rows: lower bounds (raw rows: minus the unboosted output) */
@@ -485,7 +490,8 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
     const secs = () => ((performance.now() - t0) / 1000).toFixed(0) + " s";
     const dep = to_deposits(world);
     hooks.progress({ step: "setup", message: `${dep.count} deposit tiles; finding power plant spots…` });
-    const cands = settings.boost && dep.count ? find_candidates(dep, world.water) : [];
+    const spots = settings.spots ?? "reduced";
+    const cands = settings.boost && dep.count ? find_candidates(dep, world.water, spots !== "all", spots === "reduced") : [];
     const P = new Problem(H, dep, cands, settings, world.gen2);
     try {
         const C = P.comps;
@@ -494,8 +500,27 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
         let bestLays: Layout[] = C.map(empty);
         let bestVal = -1, bound = 0;
         let startPlants: Plant[] | null = null;         // the full-power layout, while nothing beats it
-        const take = (v: number, lays: Layout[]) => { bestVal = v; bestLays = lays; startPlants = null; };
-        const bestPlants = () => startPlants ?? P.plants(bestLays);
+        // The areas are solved without "plants never overlap" (so the reduced spots are safe and the maximum is
+        // a true upper limit). Every layout is placed on real, non-overlapping positions and scored exactly.
+        let positions: Positions | null = null;
+        const getPositions = () => (positions ??= new Positions(dep, world.water));
+        const placedPlants = (lays: Layout[]) => {
+            const chosen: Placed[] = [];
+            lays.forEach((l, ci) => l.sel.forEach((j, k) => chosen.push({ cand: C[ci]!.cands[j]!, pow: l.pow[k]! })));
+            const r = realize(chosen, getPositions);
+            return r.placed.map(({ cand: c, pow }): Plant => {
+                const p: Plant = { kind: c.kind === 1 ? "nuclear" : "coal", x: c.x, y: c.y, w: c.w, h: c.h };
+                if (pow < 1) p.power = pow;
+                return p;
+            });
+        };
+        const real = (lays: Layout[]) => {
+            const plants = placedPlants(lays);
+            return { v: evaluate_layout(H, world, settings, plants).score, plants };
+        };
+        let bestReal: Plant[] = [];
+        const take = (v: number, lays: Layout[], plants: Plant[]) => { bestVal = v; bestLays = lays; bestReal = plants; startPlants = null; };
+        const bestPlants = () => startPlants ?? bestReal;
         const closed = () => bound - bestVal <= gap * Math.max(1, Math.abs(bound));
 
         if (!C.length) {
@@ -544,7 +569,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                 return list[bi]!;
             });
         }
-        bestVal = P.evaluate(bestLays);
+        { const r0 = real(bestLays); bestVal = r0.v; bestReal = r0.plants; }
         if (start && start.score >= bestVal) { bestVal = start.score; startPlants = start.plants; }
         hooks.layout({ score: bestVal, exact: true, bound, plants: bestPlants() });
 
@@ -560,12 +585,12 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                     if (settings.partial) seenLays.push(lays);
                     // with partial power the search's own score can be optimistic (overlaps): report no more than
                     // the real best so far; the page shows the layout's exact score once it is scored
-                    if (score > bestVal + 1e-12) hooks.layout({ score: settings.partial ? bestVal : score, exact: false, bound: Math.min(bound, b), plants: P.plants(lays) });
+                    if (score > bestVal + 1e-12) hooks.layout({ score: settings.partial ? bestVal : score, exact: false, bound: Math.min(bound, b), plants: placedPlants(lays) });
                 },
                 (best, b) => hooks.progress({ step: "search", message: `Searching for better layouts${pass > 1 ? ` (round ${pass})` : ""} (${secs()})`, best: Math.max(best, bestVal), bound: Math.min(bound, b) }));
             if (res.lays) {
-                const v = P.evaluate(res.lays);
-                if (v > bestVal) take(v, res.lays);
+                const r = real(res.lays);
+                if (r.v > bestVal) take(r.v, res.lays, r.plants);
             }
             if (Number.isFinite(res.bound)) bound = Math.min(bound, Math.max(res.bound, bestVal));
             if (!settings.partial || !res.lays) {
@@ -575,8 +600,8 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
             // the best of the found layouts by their real score
             let better = false;
             for (const lays of seenLays) {
-                const v = P.evaluate(lays);
-                if (v > bestVal + 1e-12) { take(v, lays); better = true; }
+                const r = real(lays);
+                if (r.v > bestVal + 1e-12) { take(r.v, lays, r.plants); better = true; }
             }
             if (better) hooks.layout({ score: bestVal, exact: true, bound, plants: bestPlants() });
             // partly powered plants next to other plants: add their rule (for every layout seen) and search again
@@ -603,8 +628,8 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                             const pow = p ? l.pow.map((v, q) => (q === k ? 1 : v)) : l.pow.filter((_, q) => q !== k);
                             const lays = bestLays.slice();
                             lays[ci] = C[ci]!.layout(sel, pow);
-                            const v = P.evaluate(lays);
-                            if (v >= bestVal - 1e-12) { take(Math.max(v, bestVal), lays); changed = true; break; }
+                            const r = real(lays);
+                            if (r.v >= bestVal - 1e-12) { take(Math.max(r.v, bestVal), lays, r.plants); changed = true; break; }
                         }
                     }
                 }

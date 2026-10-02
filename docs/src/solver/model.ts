@@ -11,6 +11,7 @@ export interface SolverSettings {
     alt: boolean;           // ALT recipes allowed
     boost: boolean;         // power plants allowed
     partial?: boolean;      // plants may get only part of their fuel (and boost that share of the time)
+    spots?: "reduced" | "classes" | "all";      // (testing) how plant spots are reduced; default "reduced"
     target: string;         // item to maximise per minute
 }
 
