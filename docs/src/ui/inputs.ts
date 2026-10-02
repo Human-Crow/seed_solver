@@ -107,7 +107,7 @@ function fill_items() {
     }
 }
 
-// item picker with icons (same look as the Alt Calculator)
+// item picker with icons (same as the Alt Calculator, also its keyboard search)
 function init_fake_select() {
     const selected = fake_sel.querySelector<HTMLButtonElement>(".selected")!;
     const options = fake_sel.querySelector<HTMLDivElement>(".options")!;
@@ -116,21 +116,44 @@ function init_fake_select() {
         const o = item_sel.selectedOptions[0];
         if (o) selected.innerHTML = html(o);
     };
+    const choose = (o: HTMLOptionElement) => {
+        item_sel.value = o.value;
+        render();
+        item_sel.dispatchEvent(new Event("change"));
+    };
+    fake_sel.tabIndex = 0;
+    options.replaceChildren();
     for (const o of item_sel.options) {
         const div = document.createElement("div");
         div.className = "option";
         div.innerHTML = html(o);
         div.addEventListener("click", () => {
-            item_sel.value = o.value;
-            render();
+            choose(o);
             fake_sel.classList.remove("open");
-            item_sel.dispatchEvent(new Event("change"));
         });
         options.appendChild(div);
     }
     selected.addEventListener("click", (e) => {
         e.stopPropagation();
         fake_sel.classList.toggle("open");
+    });
+    // a letter key picks the first item starting with it; the same letter again picks the next one
+    let lastKey = "", lastIndex = -1;
+    fake_sel.addEventListener("keydown", (e) => {
+        if (fake_sel.classList.contains("is-disabled") || e.ctrlKey || e.metaKey || e.altKey) return;
+        const key = e.key.toLowerCase();
+        if (!/^[a-z]$/.test(key)) return;
+        const matches = [...item_sel.options].map((o, i) => ({ o, i })).filter(({ o }) => o.textContent?.trim().toLowerCase().startsWith(key));
+        if (!matches.length) return;
+        const at = key === lastKey ? matches.findIndex(({ i }) => i === lastIndex) : -1;
+        const match = matches[at === -1 ? 0 : (at + 1) % matches.length]!;
+        choose(match.o);
+        // scroll the open list to it
+        const div = options.children[match.i];
+        if (div instanceof HTMLElement) options.scrollTop += div.getBoundingClientRect().top - options.getBoundingClientRect().top;
+        lastKey = key;
+        lastIndex = match.i;
+        e.preventDefault();
     });
     document.addEventListener("click", (e) => {
         if (e.target instanceof Node && !fake_sel.contains(e.target)) fake_sel.classList.remove("open");
