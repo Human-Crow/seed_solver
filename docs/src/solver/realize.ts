@@ -32,6 +32,13 @@ export class Positions {
         });
     }
 
+    /** every position (of either fuel) whose boosted square reaches one of these deposits */
+    reaching(deps: Iterable<number>): Cand[] {
+        const out = new Set<number>();
+        for (const d of deps) for (const m of this.byDep) for (const i of m.get(d) ?? []) out.add(i);
+        return [...out].sort((a, b) => a - b).map((i) => this.all[i]!);
+    }
+
     /**
      * Positions as good as `c` or better: same kind, boosting every deposit `c` boosts (exactly the same ones
      * when `sameCover`), building over no deposit `c` does not. Nearest to `c` first.

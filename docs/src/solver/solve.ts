@@ -54,7 +54,8 @@ export interface Hooks {
 }
 
 // sel: chosen plants of the area, pow: their powered share (1 = full fuel), g: resource gain, nfc: fuel cells
-type Layout = { sel: number[]; pow: number[]; g: Float64Array; nfc: number };
+// src: the positions `sel` points into, when not the area's own (layouts listed on every position)
+type Layout = { sel: number[]; pow: number[]; g: Float64Array; nfc: number; src?: Cand[] };
 
 const POW_EPS = 1e-6;
 
@@ -83,6 +84,16 @@ function shares(fullN: number, maxN: number, fullC: number, maxC: number): [numb
     return [n, c];
 }
 
+/** most small searches one area may use to list its layouts (Comp.options) */
+const OPTION_RUNS = 400;
+/** most positions reaching several raw items an area may have for Comp.mixedOptions (2^n bridge choices) */
+const MAX_BRIDGES = 6;
+
+/** see Comp.mixedOptions */
+interface MixedOptions {
+    subsets: { B: number[]; parts: { t: number; opts: { sel: number[]; n: number; c: number; gain: number }[] }[] }[];
+}
+
 const layout_key = (l: Layout) => l.sel.map((j, k) => `${j}:${l.pow[k]!.toFixed(6)}`).join(",");
 
 
@@ -101,6 +112,7 @@ class Comp {
     readonly ub: Float64Array;
     readonly rows: { cols: number[]; vals: number[]; hi: number }[] = [];
     private pricing: HighsModel | null = null;
+    private listModel: HighsModel | null = null;
 
     readonly partial: boolean;
 
@@ -268,6 +280,151 @@ class Comp {
     }
 
     /**
+     * The best layout for raw item t with at most maxN nuclear and maxC coal plants chosen from `allowed`, the
+     * plants in `fixed` always built (not counted): [item gain without coal burnt, chosen plants (not `fixed`)].
+     * One model per area, reused: the plant counts are two whole-number columns whose bounds are the limits.
+     */
+    private bestWith(H: HighsRuntime, t: number, allowed: number[], fixed: number[], budget: { runs: number }):
+            (maxN: number, maxC: number) => [number, number[]] | null {
+        const nv = this.nv;
+        const isAllowed = new Uint8Array(this.nK), isFixed = new Uint8Array(this.nK);
+        allowed.forEach((j) => (isAllowed[j] = 1));
+        fixed.forEach((j) => (isFixed[j] = 1));
+        // objective: item t's gain without coal burnt (that is fixed by the number of coal plants)
+        const cost = new Float64Array(nv);
+        for (let v = 0; v < nv; v++) cost[v] = -this.G[t * nv + v]!;
+        if (t === 4) this.cands.forEach((c, j) => { if (c.kind === 0) cost[j] = cost[j]! - COAL_FUEL_PER_MIN; });
+        const lo = new Float64Array(nv), hi = Float64Array.from(this.ub);
+        for (let j = 0; j < this.nK; j++) {
+            if (isFixed[j]) { lo[j] = 1; hi[j] = 1; } else if (!isAllowed[j]) hi[j] = 0;
+        }
+        if (!this.listModel) {
+            const byVar = this.colsByVar();
+            const nRows = this.rows.length;
+            const cols = new Columns();
+            for (let v = 0; v < nv; v++) {
+                const rows = [...byVar[v]!.rows], vals = [...byVar[v]!.vals];
+                if (v < this.nK) { rows.push(this.cands[v]!.kind === 1 ? nRows : nRows + 1); vals.push(1); }
+                cols.add(rows, vals, 0, this.ub[v]!, 0, this.isInt(v));
+            }
+            cols.add([nRows], [-1], 0, Infinity, 0, true);
+            cols.add([nRows + 1], [-1], 0, Infinity, 0, true);
+            const m = H.createModel();
+            m.passModel(cols.model(H, nRows + 2, [...this.rows.map(() => -Infinity), 0, 0], [...this.rows.map((r) => r.hi), 0, 0], true));
+            m.options.set({ output_flag: false, mip_rel_gap: 1e-12, mip_abs_gap: 1e-12 });
+            this.listModel = m;
+        }
+        const m = this.listModel;
+        const fixedN = fixed.filter((j) => this.cands[j]!.kind === 1).length, fixedC = fixed.length - fixedN;
+        return (maxN, maxC) => {
+            if (--budget.runs < 0) return null;
+            m.changeColsBounds({ kind: "range", from: 0, to: nv - 1 }, lo, hi);
+            m.changeColsCost({ kind: "range", from: 0, to: nv - 1 }, cost);
+            m.changeColsBounds({ kind: "range", from: nv, to: nv + 1 }, [0, 0], [maxN + fixedN, maxC + fixedC]);
+            if (m.run().modelStatus !== H.constants.modelStatus.optimal) return null;
+            const x = m.getSolution().colValue;
+            return [-m.getObjectiveValue(), pick(this.nK, x, 0, (j) => j, false)[0].filter((j) => !isFixed[j])];
+        };
+    }
+
+    /**
+     * The layouts worth considering for one raw item t: plants chosen from `allowed`, the plants in `fixed`
+     * always built. For every useful number of nuclear (n) and coal (m) plants (not counting `fixed`) the
+     * most of item t (small exact searches); only those no other one beats are kept. Plants on other items'
+     * deposits are not counted here (the caller makes sure they cannot matter). null: too many searches.
+     */
+    private listFor(H: HighsRuntime, t: number, allowed: number[], fixed: number[], budget: { runs: number }):
+            { sel: number[]; n: number; c: number; gain: number }[] | null {
+        const nuc = allowed.filter((j) => this.cands[j]!.kind === 1).length, coal = allowed.length - nuc;
+        const best = this.bestWith(H, t, allowed, fixed, budget);
+        const eps = 1e-9;
+        const found = new Map<string, number[]>([["", []]]);
+        const add = (sel: number[]) => found.set(sel.join(","), sel);
+        // more nuclear plants help only while the best with unlimited coal plants still grows
+        let prevAll = -Infinity;
+        for (let n = 0; n <= nuc; n++) {
+            const all = best(n, coal);
+            if (!all) return null;
+            if (all[0] <= prevAll + eps * Math.max(1, Math.abs(prevAll))) break;
+            prevAll = all[0];
+            add(all[1]);
+            // more coal plants help only until the unlimited-coal best is reached
+            for (let k = 0; k < coal; k++) {
+                const r = best(n, k);
+                if (!r) return null;
+                add(r[1]);
+                if (r[0] >= all[0] - eps * Math.max(1, Math.abs(all[0]))) break;
+            }
+        }
+        const fixedC = fixed.filter((j) => this.cands[j]!.kind === 0).length;
+        const list = [...found.values()].map((sel) => {
+            const n = sel.filter((j) => this.cands[j]!.kind === 1).length, c = sel.length - n;
+            const g = this.layout([...fixed, ...sel]).g[t]! + (t === 4 ? COAL_FUEL_PER_MIN * (c + fixedC) : 0);
+            return { sel, n, c, gain: g };
+        });
+        // keep the ones no other one beats (at least as much of the item with no more plants of either kind)
+        return list.filter((a) => !list.some((b) => b !== a && b.n <= a.n && b.c <= a.c && b.gain >= a.gain - 1e-12
+            && (b.n < a.n || b.c < a.c || b.gain > a.gain + 1e-12)));
+    }
+
+    /**
+     * For a one-item area: the best layout with at most n nuclear and c coal plants (null: none found). Used on
+     * an area built from every real position with the no-overlap rule, to correct one listed layout.
+     */
+    bestLayout(H: HighsRuntime, n: number, c: number): Layout | null {
+        const t = this.dt[0]!;
+        const r = this.bestWith(H, t, this.cands.map((_, j) => j), [], { runs: 1 })(n, c);
+        return r && { ...this.layout(r[1]), src: this.cands };
+    }
+
+    /**
+     * Every layout of this area worth considering, when all its deposits are of one raw item and plants are
+     * fully powered: then a layout only matters through how much it adds of that item and how many coal and
+     * nuclear plants it uses (see listFor). The full search then picks one of these per area, which is much
+     * easier than choosing every plant itself. null: deposits of several items, or too many choices (the area
+     * is then searched plant by plant).
+     */
+    options(H: HighsRuntime): Layout[] | null {
+        if (this.partial || !this.nD) return null;
+        const t = this.dt[0]!;
+        if (this.dt.some((x) => x !== t)) return null;
+        const list = this.listFor(H, t, this.cands.map((_, j) => j), [], { runs: OPTION_RUNS });
+        return list && list.map((o) => ({ ...this.layout(o.sel), src: this.cands }));
+    }
+
+    /**
+     * An area with deposits of several raw items, where only a few positions ("bridges") reach deposits of more
+     * than one item: for every choice of bridges the other positions split into parts of one item each, and
+     * each part's layouts are listed like a one-item area (listFor) with those bridges built. The search then
+     * picks one bridge choice and one layout per part. null: too many bridges or searches.
+     */
+    mixedOptions(H: HighsRuntime, dtype: Uint8Array): MixedOptions | null {
+        if (this.partial || !this.nD) return null;
+        const itemsOf = (c: Cand) => new Set([...c.cover, ...c.foot].map((d) => dtype[d]!));
+        const bridges: number[] = [], part = new Map<number, number[]>();
+        this.cands.forEach((c, j) => {
+            const it = itemsOf(c);
+            if (it.size > 1) bridges.push(j);
+            else if (it.size === 1) { const t = [...it][0]!; let l = part.get(t); if (!l) part.set(t, (l = [])); l.push(j); }
+        });
+        if (bridges.length > MAX_BRIDGES) return null;
+        const items = [...new Set(this.dt)];
+        const budget = { runs: OPTION_RUNS * items.length * 2 };
+        const subsets: MixedOptions["subsets"] = [];
+        for (let mask = 0; mask < 1 << bridges.length; mask++) {
+            const B = bridges.filter((_, i) => mask & (1 << i));
+            const parts: MixedOptions["subsets"][number]["parts"] = [];
+            for (const t of items) {
+                const list = this.listFor(H, t, part.get(t) ?? [], B, budget);
+                if (!list) return null;
+                parts.push({ t, opts: list });
+            }
+            subsets.push({ B, parts });
+        }
+        return { subsets };
+    }
+
+    /**
      * Resource gain of a layout. A tile is nuclear boosted for the summed share of the nuclear plants
      * reaching it (at most all the time), coal boosted for the rest of the time the coal plants run.
      * With every plant fully powered this is: nuclear wins, then coal.
@@ -302,7 +459,63 @@ class Comp {
     dispose() {
         this.pricing?.dispose();
         this.pricing = null;
+        this.listModel?.dispose();
+        this.listModel = null;
     }
+}
+
+
+// ---------------------------------------------------------------- areas of one raw item combined
+/**
+ * All areas of one raw item together: for every number of nuclear (N) and coal (C) plants, the most of the item
+ * those plants can add when spread over the areas in the best way (exact, by going through the areas one by one).
+ * Only rows that beat every row with no more plants are kept. choose(row) gives each area's layout (option index).
+ */
+function combine(areas: { n: number; c: number; gain: number }[][]):
+        { points: { N: number; C: number; gain: number }[]; choose: (p: number) => number[] } {
+    let nMax = 0, cMax = 0;
+    let best = new Float64Array([0]);           // best[N * (cMax + 1) + C]
+    const steps: { cw: number; pick: Int32Array }[] = [];
+    for (const opts of areas) {
+        const n2 = nMax + Math.max(...opts.map((o) => o.n)), c2 = cMax + Math.max(...opts.map((o) => o.c));
+        const next = new Float64Array((n2 + 1) * (c2 + 1)).fill(-Infinity);
+        const pick = new Int32Array(next.length).fill(-1);
+        for (let N = 0; N <= nMax; N++) {
+            for (let C = 0; C <= cMax; C++) {
+                const v = best[N * (cMax + 1) + C]!;
+                if (v === -Infinity) continue;
+                opts.forEach((o, i) => {
+                    const k = (N + o.n) * (c2 + 1) + C + o.c, w = v + o.gain;
+                    if (w > next[k]!) { next[k] = w; pick[k] = i; }
+                });
+            }
+        }
+        steps.push({ cw: c2 + 1, pick });
+        best = next; nMax = n2; cMax = c2;
+    }
+    // rows worth having: better than every row with fewer of either plant
+    const cw = cMax + 1, top = new Float64Array(best.length);
+    const points: { N: number; C: number; gain: number }[] = [], at: number[] = [];
+    for (let N = 0; N <= nMax; N++) {
+        for (let C = 0; C <= cMax; C++) {
+            const k = N * cw + C, v = best[k]!;
+            const a = N ? top[k - cw]! : -Infinity, b = C ? top[k - 1]! : -Infinity;
+            const prev = Math.max(a, b);
+            top[k] = Math.max(v, prev);
+            if (v > prev + 1e-9 * Math.max(1, Math.abs(v))) { points.push({ N, C, gain: v }); at.push(k); }
+        }
+    }
+    const choose = (p: number): number[] => {
+        const out: number[] = new Array(areas.length).fill(0);
+        let N = Math.floor(at[p]! / cw), C = at[p]! % cw;
+        for (let a = areas.length - 1; a >= 0; a--) {
+            const st = steps[a]!, i = st.pick[N * st.cw + C]!;
+            out[a] = i;
+            N -= areas[a]![i]!.n; C -= areas[a]![i]!.c;
+        }
+        return out;
+    };
+    return { points, choose };
 }
 
 
@@ -389,18 +602,69 @@ class Problem {
         return r ? r.val : -1;
     }
 
-    /** The full MIP: recipes and every area's plant choice together. */
+    /**
+     * The full MIP: recipes and every area's plant choice together. Areas with a list of layouts (one raw item
+     * each, see Comp.options) are combined per raw item first (combine()): the search then picks one "N nuclear
+     * and C coal plants for this item" row per item instead of a layout per area.
+     */
     compact(gap: number, onImproving: (score: number, bound: number, lays: Layout[]) => void,
-            onLog: (best: number, bound: number) => void): { optimal: boolean; score: number; bound: number; lays: Layout[] | null } {
+            onLog: (best: number, bound: number) => void,
+            options: (Layout[] | null)[] = [],
+            mixed: (MixedOptions | null)[] = [],
+            seconds = Infinity): { optimal: boolean; score: number; bound: number; lays: Layout[] | null } {
         const { M, H } = this;
         const nI = M.nI;
         const cols = new Columns();
         this.recipeColumns(cols);
         const lower = this.itemLower(), upper: number[] = new Array(nI).fill(Infinity);
-        const offsets: number[] = [];
+        // areas with listed layouts, by raw item
+        const byItem = new Map<number, number[]>();
+        this.comps.forEach((c, ci) => { if (options[ci]) { const t = c.dt[0]!; let l = byItem.get(t); if (!l) byItem.set(t, (l = [])); l.push(ci); } });
+        const tables = [...byItem].map(([t, cis]) => ({ t, cis, table: combine(cis.map((ci) => options[ci]!.map((lay) => {
+            let n = 0;
+            for (const j of lay.sel) if ((lay.src ?? this.comps[ci]!.cands)[j]!.kind === 1) n++;
+            const c = lay.sel.length - n;
+            return { n, c, gain: lay.g[t]! + (t === 4 ? COAL_FUEL_PER_MIN * c : 0) };
+        }))) }));
+        // rows: per plain area its own rows; per raw item "exactly one row of its table"; the plant totals
         let rowBase = nI;
-        for (const c of this.comps) {
+        const isPlain = (ci: number) => !options[ci] && !mixed[ci];
+        const mixedRows = mixed.reduce((a, mo) => a + (mo ? 1 + mo.subsets.reduce((b, sb) => b + sb.parts.length, 0) : 0), 0);
+        const plainRows = this.comps.reduce((a, c, ci) => a + (isPlain(ci) ? c.rows.length : 0), 0) + mixedRows;
+        const nPlain = this.comps.filter((_, ci) => isPlain(ci)).length;
+        const rowN = nI + plainRows + tables.length, rowC = rowN + 1;
+        // per plain area: its own nuclear / coal totals (rows after the overall totals)
+        let plainK = 0;
+        const areaRow = this.comps.map((_, ci) => (isPlain(ci) ? rowC + 1 + 2 * plainK++ : -1));
+        const offsets: number[] = [];
+        // a column: raw item gains, coal plants (coal burnt), nuclear plants (fuel cells), totals, other rows
+        const planCol = (gains: [number, number][], n: number, c: number, extra: [number, number][]) => {
+            const entries = new Map<number, number>();
+            const add = (row: number, v: number) => { if (v) entries.set(row, (entries.get(row) ?? 0) + v); };
+            for (const [t, v] of gains) add(M.rawRows[t]!, v);
+            add(M.rawRows[4]!, -COAL_FUEL_PER_MIN * c);
+            add(M.fcRow, -NUCLEAR_FUEL_PER_MIN * n);
+            add(rowN, n); add(rowC, c);
+            for (const [r, v] of extra) add(r, v);
+            const rows = [...entries.keys()].sort((a, b) => a - b);
+            cols.add(rows, rows.map((r) => entries.get(r)!), 0, 1, 0, true);
+        };
+        this.comps.forEach((c, ci) => {
             offsets.push(cols.count);
+            if (options[ci]) return;
+            const mo = mixed[ci];
+            if (mo) {
+                // one bridge choice (z_B); per part one layout, only with that choice
+                const choice = rowBase++;
+                lower.push(1); upper.push(1);
+                for (const sb of mo.subsets) {
+                    const nB = sb.B.filter((j) => c.cands[j]!.kind === 1).length;
+                    const links = sb.parts.map(() => { lower.push(0); upper.push(0); return rowBase++; });
+                    planCol([], nB, sb.B.length - nB, [[choice, 1], ...links.map((r): [number, number] => [r, -1])]);
+                    sb.parts.forEach((pt, k) => { for (const o of pt.opts) planCol([[pt.t, o.gain]], o.n, o.c, [[links[k]!, 1]]); });
+                }
+                return;
+            }
             const byVar = c.colsByVar();
             for (let v = 0; v < c.nv; v++) {
                 const rows: number[] = [], vals: number[] = [];
@@ -409,19 +673,78 @@ class Problem {
                 const order = rows.map((_, i) => i).sort((a, b) => rows[a]! - rows[b]!);
                 const rr = [...order.map((i) => rows[i]!), ...byVar[v]!.rows.map((q) => q + rowBase)];
                 const vv = [...order.map((i) => vals[i]!), ...byVar[v]!.vals];
+                if (v < c.nK) {
+                    const nuc = c.cands[v]!.kind === 1;
+                    rr.push(nuc ? rowN : rowC, areaRow[ci]! + (nuc ? 0 : 1)); vv.push(1, 1);
+                }
                 cols.add(rr, vv, 0, c.ub[v]!, 0, c.isInt(v));
             }
             for (const r of c.rows) { lower.push(-Infinity); upper.push(r.hi); }
             rowBase += c.rows.length;
-        }
-        const layouts = (x: ArrayLike<number>) => this.comps.map((c, ci) => {
-            const [sel, pow] = pick(c.nK, x, offsets[ci]!, (j) => c.powVar(j), c.partial);
-            return c.layout(sel, pow);
         });
+        const tOffsets: number[] = [];
+        for (const { t, table } of tables) {
+            tOffsets.push(cols.count);
+            for (const pt of table.points) {
+                // the item's gain; coal burnt by the coal plants; fuel cells of the nuclear plants; the totals
+                const entries = new Map<number, number>();
+                const add = (row: number, v: number) => { if (v) entries.set(row, (entries.get(row) ?? 0) + v); };
+                add(M.rawRows[t]!, pt.gain - (t === 4 ? COAL_FUEL_PER_MIN * pt.C : 0));
+                if (t !== 4) add(M.rawRows[4]!, -COAL_FUEL_PER_MIN * pt.C);
+                add(M.fcRow, -NUCLEAR_FUEL_PER_MIN * pt.N);
+                add(rowBase, 1);
+                add(rowN, pt.N);
+                add(rowC, pt.C);
+                const rows = [...entries.keys()].sort((a, b) => a - b);
+                cols.add(rows, rows.map((r) => entries.get(r)!), 0, 1, 0, true);
+            }
+            lower.push(1); upper.push(1);
+            rowBase += 1;
+        }
+        cols.add([rowN], [-1], 0, Infinity, 0, true);
+        cols.add([rowC], [-1], 0, Infinity, 0, true);
+        lower.push(0, 0); upper.push(0, 0);
+        rowBase += 2;
+        for (let k = 0; k < nPlain; k++) {
+            cols.add([rowBase], [-1], 0, Infinity, 0, true);
+            cols.add([rowBase + 1], [-1], 0, Infinity, 0, true);
+            lower.push(0, 0); upper.push(0, 0);
+            rowBase += 2;
+        }
+        const layouts = (x: ArrayLike<number>) => {
+            const out: Layout[] = this.comps.map((c, ci) => {
+                if (options[ci]) return options[ci]![0]!;
+                const mo = mixed[ci];
+                if (mo) {
+                    let k = offsets[ci]!, bestZ = -1, sel: number[] = [];
+                    for (const sb of mo.subsets) {
+                        const z = x[k++]!;
+                        const chosen: number[] = [...sb.B];
+                        for (const pt of sb.parts) {
+                            let bi = 0;
+                            pt.opts.forEach((_, i) => { if (x[k + i]! > x[k + bi]!) bi = i; });
+                            chosen.push(...pt.opts[bi]!.sel);
+                            k += pt.opts.length;
+                        }
+                        if (z > bestZ) { bestZ = z; sel = chosen; }
+                    }
+                    return c.layout(sel);
+                }
+                const [sel, pow] = pick(c.nK, x, offsets[ci]!, (j) => c.powVar(j), c.partial);
+                return c.layout(sel, pow);
+            });
+            tables.forEach(({ cis, table }, k) => {
+                let bi = 0;
+                table.points.forEach((_, i) => { if (x[tOffsets[k]! + i]! > x[tOffsets[k]! + bi]!) bi = i; });
+                table.choose(bi).forEach((o, a) => { out[cis[a]!] = options[cis[a]!]![o]!; });
+            });
+            return out;
+        };
         const m = H.createModel();
         try {
             m.passModel(cols.model(H, rowBase, lower, upper, true));
-            m.options.set({ output_flag: false, mip_rel_gap: gap, mip_min_logging_interval: 1 });
+            // the log must be on for the progress callback; it is not printed
+            m.options.set({ output_flag: true, log_to_console: false, mip_rel_gap: gap, mip_min_logging_interval: 1, ...(Number.isFinite(seconds) ? { time_limit: seconds } : {}) });
             const cb = H.constants.callbackType;
             const run = m.run({
                 [cb.mipImprovingSolution!]: (e) => {
@@ -445,7 +768,7 @@ class Problem {
         const out: Plant[] = [];
         lays.forEach((l, ci) => {
             l.sel.forEach((j, k) => {
-                const c = this.comps[ci]!.cands[j]!;
+                const c = (l.src ?? this.comps[ci]!.cands)[j]!;
                 const p: Plant = { kind: c.kind === 1 ? "nuclear" : "coal", x: c.x, y: c.y, w: c.w, h: c.h };
                 if (l.pow[k]! < 1) p.power = l.pow[k]!;
                 out.push(p);
@@ -506,7 +829,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
         const getPositions = () => (positions ??= new Positions(dep, world.water));
         const placedPlants = (lays: Layout[]) => {
             const chosen: Placed[] = [];
-            lays.forEach((l, ci) => l.sel.forEach((j, k) => chosen.push({ cand: C[ci]!.cands[j]!, pow: l.pow[k]! })));
+            lays.forEach((l, ci) => l.sel.forEach((j, k) => chosen.push({ cand: (l.src ?? C[ci]!.cands)[j]!, pow: l.pow[k]! })));
             const r = realize(chosen, getPositions);
             return r.placed.map(({ cand: c, pow }): Plant => {
                 const p: Plant = { kind: c.kind === 1 ? "nuclear" : "coal", x: c.x, y: c.y, w: c.w, h: c.h };
@@ -575,6 +898,43 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
 
         // step 2: the full MIP closes the gap. With partial power: a partly powered plant must be the only plant
         // on its tiles; that rule is added for the plants a search made partly powered, then it searches again.
+        // Without partial power: every area's useful layouts are listed first (Comp.options / mixedOptions) and
+        // the search picks among those (much faster than plant by plant, above all when the last few plants
+        // decide, e.g. ALT recipes off). Areas that cannot be listed are still searched plant by plant.
+        let options: (Layout[] | null)[] = [];
+        let mixed: (MixedOptions | null)[] = [];
+        if (!settings.partial && !closed()) {
+            hooks.progress({ step: "search", message: `Listing the useful layouts per area (${secs()})…`, best: bestVal, bound });
+            options = C.map((c) => c.options(H));
+            mixed = C.map((c, ci) => (options[ci] ? null : c.mixedOptions(H, dep.type)));
+        }
+        // An area's listed layouts ignore that plants cannot overlap (so they are an upper limit). If the
+        // search picks one whose plants do not fit, that one layout is replaced by the area's best with the same
+        // number of plants on every real position with the no-overlap rule (exact), and the search runs again.
+        const exactLays = new Set<Layout>();
+        const exactComps: (Comp | null)[] = C.map(() => null);
+        const refine = (lays: Layout[]): number => {
+            let n = 0;
+            C.forEach((c, ci) => {
+                const l = lays[ci]!, opts = options[ci];
+                if (!opts || exactLays.has(l) || !l.sel.length) return;
+                const idx = opts.indexOf(l);
+                if (idx < 0) return;
+                const chosen = l.sel.map((j, k): Placed => ({ cand: (l.src ?? c.cands)[j]!, pow: l.pow[k]! }));
+                if (!realize(chosen, getPositions).failed) return;
+                if (!exactComps[ci]) {
+                    const deps = new Set(c.deps);
+                    const inside = (a: Int32Array) => a.every((d) => deps.has(d));
+                    exactComps[ci] = new Comp(getPositions().reaching(deps).filter((q) => inside(q.cover) && inside(q.foot)), dep.type, P.S, false, true);
+                }
+                const nN = l.sel.filter((j) => (l.src ?? c.cands)[j]!.kind === 1).length;
+                const exact = exactComps[ci]!.bestLayout(H, nN, l.sel.length - nN) ?? { ...c.layout([]), src: c.cands };
+                exactLays.add(exact);
+                opts[idx] = exact;
+                n++;
+            });
+            return n;
+        };
         for (let pass = 1; !closed(); pass++) {
             hooks.progress({ step: "search", message: "Searching for better layouts…", best: bestVal, bound });
             const seenLays: Layout[][] = [];       // layouts found during this search (for the partial power rule)
@@ -582,12 +942,13 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                 // no HiGHS calls inside HiGHS callbacks: report the search's own score; the page scores
                 // every reported layout exactly (overlapping partly powered plants: worst case)
                 (score, b, lays) => {
-                    if (settings.partial) seenLays.push(lays);
+                    seenLays.push(lays);
                     // with partial power the search's own score can be optimistic (overlaps): report no more than
                     // the real best so far; the page shows the layout's exact score once it is scored
                     if (score > bestVal + 1e-12) hooks.layout({ score: settings.partial ? bestVal : score, exact: false, bound: Math.min(bound, b), plants: placedPlants(lays) });
                 },
-                (best, b) => hooks.progress({ step: "search", message: `Searching for better layouts${pass > 1 ? ` (round ${pass})` : ""} (${secs()})`, best: Math.max(best, bestVal), bound: Math.min(bound, b) }));
+                (best, b) => hooks.progress({ step: "search", message: `Searching for better layouts${pass > 1 ? ` (round ${pass})` : ""} (${secs()})`, best: Math.max(best, bestVal), bound: Math.min(bound, b) }),
+                options, mixed);
             if (res.lays) {
                 const r = real(res.lays);
                 if (r.v > bestVal) take(r.v, res.lays, r.plants);
@@ -595,6 +956,22 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
             if (Number.isFinite(res.bound)) bound = Math.min(bound, Math.max(res.bound, bestVal));
             if (!settings.partial || !res.lays) {
                 if (res.optimal) bound = Math.min(bound, Math.max(bestVal, res.score, Number.isFinite(res.bound) ? res.bound : res.score));
+                if (!settings.partial) {
+                    // every layout the search found, on real positions (the last one may not fit as chosen)
+                    let better = false;
+                    for (const lays of seenLays) {
+                        const r = real(lays);
+                        if (r.v > bestVal + 1e-12) { take(r.v, lays, r.plants); better = true; }
+                    }
+                    if (better) hooks.layout({ score: bestVal, exact: true, bound, plants: bestPlants() });
+                    if (res.lays && res.optimal && !closed()) {
+                        const n = refine(res.lays);
+                        if (n) {
+                            hooks.progress({ step: "search", message: `Plants did not fit in ${n} area${n > 1 ? "s" : ""}: correcting ${n > 1 ? "those layouts" : "that layout"} (${secs()})`, best: bestVal, bound });
+                            continue;
+                        }
+                    }
+                }
                 break;
             }
             // the best of the found layouts by their real score
@@ -613,6 +990,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
             }
             hooks.progress({ step: "search", message: `${broken} partly powered plant${broken > 1 ? "s" : ""} shared tiles with other plants; searching again (${secs()})`, best: bestVal, bound });
         }
+        exactComps.forEach((c) => c?.dispose());
         // clean-up: partly powered plants at full power or removed, where that scores better (or the same:
         // fewer partly powered plants is simpler to build)
         if (settings.partial && !startPlants) {
