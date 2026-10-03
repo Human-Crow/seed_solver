@@ -13,7 +13,7 @@
 import { COAL_FUEL_PER_MIN, NUCLEAR_FUEL_PER_MIN, PLANT_SHAPES, RAW_ITEMS } from "./data.js";
 import { find_candidates } from "./candidates.js";
 import { Columns, RecipeModel, speed_table } from "./model.js";
-import { Positions, realize } from "./realize.js";
+import { Positions, footprint, placeable, realize } from "./realize.js";
 const POW_EPS = 1e-6;
 /** chosen plants and their powered shares from a solution vector (unpowered plants are left out) */
 function pick(nK, x, off, powVar, partial) {
@@ -43,11 +43,13 @@ function shares(fullN, maxN, fullC, maxC) {
 }
 /** most small searches one area may use to list its layouts (Comp.options) */
 const OPTION_RUNS = 400;
+/** longest a host area's exact search with partly powered plants may run (then its proven upper limit is used) */
+const HOST_SECONDS = 15;
 /** most positions reaching several raw items an area may have for Comp.mixedOptions (2^n bridge choices) */
 const MAX_BRIDGES = 6;
 const layout_key = (l) => l.sel.map((j, k) => `${j}:${l.pow[k].toFixed(6)}`).join(",");
 // ---------------------------------------------------------------- one area of plant positions
-class Comp {
+export class Comp {
     cands;
     nK;
     nD;
@@ -295,7 +297,7 @@ class Comp {
             cols.add([nRows + 1], [-1], 0, Infinity, 0, true);
             const m = H.createModel();
             m.passModel(cols.model(H, nRows + 2, [...this.rows.map(() => -Infinity), 0, 0], [...this.rows.map((r) => r.hi), 0, 0], true));
-            m.options.set({ output_flag: false, mip_rel_gap: 1e-12, mip_abs_gap: 1e-12 });
+            m.options.set({ output_flag: false, mip_rel_gap: 1e-12, mip_abs_gap: 1e-12, presolve: "off" });
             this.listModel = m;
         }
         const m = this.listModel;
@@ -425,9 +427,11 @@ class Comp {
      * this Comp): the most of item t with at most N fully powered nuclear and C coal plants, plus at most one
      * nuclear plant running a share p of the time and one coal plant running q (scored like the game: on a
      * shared tile a fully powered plant wins, partly powered ones count the worst case, see shares()).
-     * Returns the item gain (coal burnt not counted) and the plants with their power.
+     * `others`: the item's other areas as their table (exactly one row); `seconds`: time limit (then the best
+     * found and HiGHS's limit); `extra`: rows "at most hi of these plants"; `noPartial`: plants that may not be
+     * the partly powered one. Returns the item gain (coal burnt not counted) and the plants with their power.
      */
-    partialBest(H, t, N, C, p, q, noOverlap = false) {
+    partialBest(H, t, N, C, p, q, others = null, seconds = Infinity, extra = [], noPartial = []) {
         const { nK, nD } = this;
         const di = new Map(this.deps.map((d, i) => [d, i]));
         const covN = Array.from({ length: nD }, () => []), covC = Array.from({ length: nD }, () => []);
@@ -461,38 +465,25 @@ class Comp {
             rows.push({ cols: [BN + i, BC + i, ...f.map((j) => Y + j), ...f.map((j) => Z + j)], vals: [1, 1, ...f.map(() => 1), ...f.map(() => 1)], hi: 1 });
         }
         const nuc = this.cands.map((_, j) => j).filter((j) => this.cands[j].kind === 1), coal = this.cands.map((_, j) => j).filter((j) => this.cands[j].kind === 0);
-        rows.push({ cols: nuc.map((j) => Y + j), vals: nuc.map(() => 1), hi: N });
-        rows.push({ cols: coal.map((j) => Y + j), vals: coal.map(() => 1), hi: C });
+        // the other areas of the item: exactly one row of their table (columns after the plants', see below)
+        const O = nv, nO = others ? others.length : 0;
+        rows.push({ cols: [...nuc.map((j) => Y + j), ...Array.from({ length: nO }, (_, r) => O + r)], vals: [...nuc.map(() => 1), ...(others ?? []).map((o) => o.N)], hi: N });
+        rows.push({ cols: [...coal.map((j) => Y + j), ...Array.from({ length: nO }, (_, r) => O + r)], vals: [...coal.map(() => 1), ...(others ?? []).map((o) => o.C)], hi: C });
+        const oneRow = rows.length;
+        if (nO)
+            rows.push({ cols: Array.from({ length: nO }, (_, r) => O + r), vals: (others ?? []).map(() => 1), hi: 1 });
         if (nuc.length)
             rows.push({ cols: nuc.map((j) => Z + j), vals: nuc.map(() => 1), hi: 1 });
         if (coal.length)
             rows.push({ cols: coal.map((j) => Z + j), vals: coal.map(() => 1), hi: 1 });
         for (let j = 0; j < nK; j++)
             rows.push({ cols: [Y + j, Z + j], vals: [1, 1], hi: 1 });
-        // real positions: footprints never overlap
-        if (noOverlap) {
-            const tiles = new Map();
-            this.cands.forEach((c, j) => { for (let a = 0; a < c.w; a++)
-                for (let b = 0; b < c.h; b++) {
-                    const k = `${c.x + a},${c.y + b}`;
-                    let l = tiles.get(k);
-                    if (!l)
-                        tiles.set(k, (l = []));
-                    l.push(j);
-                } });
-            const seen = new Set();
-            for (const js of tiles.values()) {
-                if (js.length < 2)
-                    continue;
-                const k = js.join(",");
-                if (seen.has(k))
-                    continue;
-                seen.add(k);
-                rows.push({ cols: [...js.map((j) => Y + j), ...js.map((j) => Z + j)], vals: [...js.map(() => 1), ...js.map(() => 1)], hi: 1 });
-            }
-        }
+        // extra rules: of these spots at most hi (spots that cannot all fit on real positions, see partial_search)
+        for (const { js, hi } of extra)
+            rows.push({ cols: [...js.map((j) => Y + j), ...js.map((j) => Z + j)], vals: [...js.map(() => 1), ...js.map(() => 1)], hi });
         // objective: item t gain (coal burnt is counted by the caller)
-        const cost = new Float64Array(nv), ub = new Float64Array(nv).fill(1);
+        const cost = new Float64Array(nv + nO), ub = new Float64Array(nv + nO).fill(1);
+        (others ?? []).forEach((o, r) => { cost[O + r] = -o.gain; });
         for (let i = 0; i < nD; i++) {
             if (this.dt[i] !== t)
                 continue;
@@ -510,18 +501,27 @@ class Comp {
         for (let j = 0; j < nK; j++)
             if (pw(j) <= 0)
                 ub[Z + j] = 0;
-        const byVar = Array.from({ length: nv }, () => ({ r: [], v: [] }));
+        for (const j of noPartial)
+            ub[Z + j] = 0;
+        const byVar = Array.from({ length: nv + nO }, () => ({ r: [], v: [] }));
         rows.forEach((r, k) => r.cols.forEach((c, x) => { byVar[c].r.push(k); byVar[c].v.push(r.vals[x]); }));
         const cols = new Columns();
-        for (let v = 0; v < nv; v++) {
+        for (let v = 0; v < nv + nO; v++) {
             const o = byVar[v].r.map((_, x) => x).sort((a, b) => byVar[v].r[a] - byVar[v].r[b]);
             cols.add(o.map((x) => byVar[v].r[x]), o.map((x) => byVar[v].v[x]), 0, ub[v], cost[v], v < BN || v >= Z);
         }
+        const lowers = rows.map(() => -Infinity);
+        if (nO)
+            lowers[oneRow] = 1; // exactly one row of the other areas' table
         const model = H.createModel();
         try {
-            model.passModel(cols.model(H, rows.length, rows.map(() => -Infinity), rows.map((r) => r.hi), true));
-            model.options.set({ output_flag: false, mip_rel_gap: 1e-12, mip_abs_gap: 1e-12, presolve: "off" });
-            if (model.run().modelStatus !== H.constants.modelStatus.optimal)
+            model.passModel(cols.model(H, rows.length, lowers, rows.map((r) => r.hi), true));
+            model.options.set({ output_flag: false, mip_rel_gap: 1e-12, mip_abs_gap: 1e-12, presolve: "off", ...(Number.isFinite(seconds) ? { time_limit: seconds } : {}) });
+            const status = model.run().modelStatus;
+            const optimal = status === H.constants.modelStatus.optimal;
+            // stopped by the time limit: the best found so far and HiGHS's proven upper limit
+            const bound = optimal ? -model.getObjectiveValue() : -model.info.get("mip_dual_bound");
+            if (!optimal && !(Number.isFinite(bound) && Number.isFinite(model.getObjectiveValue())))
                 return null;
             const x = model.getSolution().colValue;
             const sel = [], pow = [], part = [];
@@ -537,7 +537,11 @@ class Comp {
                     part.push(true);
                 }
             }
-            return { value: -model.getObjectiveValue(), sel, pow, part };
+            let other = -1;
+            for (let r = 0; r < nO; r++)
+                if (x[O + r] > 0.5)
+                    other = r;
+            return { value: -model.getObjectiveValue(), bound: Math.max(bound, -model.getObjectiveValue()), sel, pow, part, other };
         }
         finally {
             model.dispose();
@@ -693,7 +697,7 @@ function group_rows(c, groups) {
     return { rows, n };
 }
 // ---------------------------------------------------------------- the whole problem
-class Problem {
+export class Problem {
     H;
     dep;
     M;
@@ -997,7 +1001,7 @@ class Problem {
      * values mixed with the same weights (an upper limit: the best value is convex in p and q). Areas without
      * a table (several raw items) are searched plant by plant with partial power (optimistic on shared tiles).
      */
-    partialMip(gap, items, plain, groups, onImproving, onLog) {
+    partialMip(gap, items, plain, groups, onImproving, onLog, cutoff = -Infinity) {
         const { M, H } = this;
         const nI = M.nI;
         const cols = new Columns();
@@ -1112,15 +1116,25 @@ class Problem {
         const m = H.createModel();
         try {
             m.passModel(cols.model(H, rowBase, lower, upper, true));
-            m.options.set({ output_flag: true, log_to_console: false, mip_rel_gap: gap, mip_min_logging_interval: 1 });
+            // cutoff: only layouts scoring more are searched
+            m.options.set({ output_flag: true, log_to_console: false, mip_rel_gap: gap, mip_min_logging_interval: 1,
+                ...(Number.isFinite(cutoff) ? { objective_bound: -cutoff } : {}) });
             const cb = H.constants.callbackType;
             const run = m.run({
                 [cb.mipImprovingSolution]: (e) => { if (e.data.mip_solution)
                     onImproving(Float64Array.from(e.data.mip_solution), -(e.data.objective_function_value ?? e.data.mip_primal_bound ?? 0)); },
                 [cb.mipLogging]: (e) => onLog(-(e.data.mip_primal_bound ?? Infinity), -(e.data.mip_dual_bound ?? -Infinity)),
             });
-            const bound = -m.info.get("mip_dual_bound");
-            if (run.modelStatus !== H.constants.modelStatus.optimal)
+            const st = H.constants.modelStatus, status = run.modelStatus;
+            // nothing above the cutoff found (HiGHS also stops when its limit is within the gap of the cutoff)
+            const dual = -m.info.get("mip_dual_bound");
+            const bound = Number.isFinite(dual) ? Math.max(dual, cutoff) : cutoff;
+            const none = { optimal: true, score: -Infinity, bound, x: null, decode };
+            if (status === st.infeasible || status === st.objectiveBound)
+                return none;
+            if (status === st.optimal && Number.isFinite(cutoff) && -m.getObjectiveValue() <= cutoff)
+                return none;
+            if (status !== st.optimal)
                 return { optimal: false, score: 0, bound, x: null, decode };
             return { optimal: true, score: -m.getObjectiveValue(), bound, x: Float64Array.from(m.getSolution().colValue), decode };
         }
@@ -1332,106 +1346,263 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                 }
                 return { t, cis, table, boxes };
             });
-            // exact values: one model per raw item over all its one-item areas
+            // Exact values (exact()). At the cell corners (powers 0 or 1) the item's table is exact: a plant at
+            // power 1 is one more fully powered plant. In between, at most one area of the item holds the partly
+            // powered plant of each kind ("host"): a small search over the host's plants with the other areas as
+            // their table, for each host in turn (best limit first; hosts whose limit cannot win are skipped).
             const cache = new Map();
-            // layouts found for an item's (N, C): plant indexes in the item's union and whether each is the partly
-            // powered one; any of them is a real layout at other powers too (a lower limit for the exact best)
-            const known = new Map();
-            // Items whose plants did not fit on real positions: their exact values are worked out on every real
-            // position with the no-overlap rule instead (exact; the reduced spots without it are an upper limit)
-            const realMode = new Set(); // areas (not items) on real positions
-            const realUnions = new Map();
-            const realArea = new Map();
-            const real_area = (ci) => {
-                let a = realArea.get(ci);
+            // per host set: its search's result (also when the time limit stopped it)
+            const setCache = new Map();
+            // How an area is searched as a host. Level 0: its reduced spots (each stands for the real positions it
+            // beats, Positions.represented). When a layout's plants do not fit, the next level: 1, one spot per group
+            // of real positions boosting and building over exactly the same deposits; 2, every real position. On
+            // levels 1 and 2 a tile every position of a spot builds on allows only one of them. Spot combinations
+            // proven not to fit (placeable) are ruled out per level. Every level is a true upper limit.
+            const level = new Map();
+            const realPos = new Map();
+            const real_cands = (ci) => {
+                let a = realPos.get(ci);
                 if (!a) {
                     const deps = new Set(C[ci].deps);
                     const inside = (x) => x.every((d) => deps.has(d));
-                    const cands = getPositions().reaching(deps).filter((q) => inside(q.cover) && inside(q.foot));
-                    a = { cands, comp: new Comp(cands, dep.type, P.S, false, true) };
-                    realArea.set(ci, a);
+                    a = getPositions().reaching(deps).filter((q) => inside(q.cover) && inside(q.foot));
+                    realPos.set(ci, a);
                 }
                 return a;
             };
-            const mode = (it) => it.cis.filter((ci) => realMode.has(ci)).join(",");
-            const union_of = (it) => {
-                const key = `${it.t}|${mode(it)}`;
-                let u = realUnions.get(key);
-                if (!u) {
-                    const where = [], all = [];
-                    for (const ci of it.cis)
-                        (realMode.has(ci) ? real_area(ci).cands : C[ci].cands).forEach((c, j) => { all.push(c); where.push([ci, j]); });
-                    u = { comp: new Comp(all, dep.type, P.S, false, false), where };
-                    realUnions.set(key, u);
-                }
-                return u;
-            };
-            const to_lays = (it, sel, pow) => {
-                const u = union_of(it);
-                const per = new Map(it.cis.map((ci) => [ci, { sel: [], pow: [] }]));
-                sel.forEach((j, k) => { const [ci, lj] = u.where[j]; per.get(ci).sel.push(lj); per.get(ci).pow.push(pow[k]); });
-                const lays = new Map();
-                for (const [ci, x] of per) {
-                    if (realMode.has(ci)) {
-                        const a = real_area(ci);
-                        lays.set(ci, { ...a.comp.layout(x.sel, x.pow), src: a.cands });
+            const views = new Map();
+            const view_of = (ci) => {
+                const lv = level.get(ci) ?? 0;
+                if (!lv)
+                    return null;
+                const vk = `${ci}|${lv}`;
+                let v = views.get(vk);
+                if (v)
+                    return v;
+                const groups = new Map();
+                real_cands(ci).forEach((q, k) => {
+                    const key = lv < 2 ? `${q.kind}|${q.cover.join(",")}|${q.foot.join(",")}` : String(k);
+                    let g = groups.get(key);
+                    if (!g)
+                        groups.set(key, (g = []));
+                    g.push(q);
+                });
+                const same = [...groups.values()];
+                const sureOf = same.map((g) => {
+                    let tiles = new Set(footprint(g[0]));
+                    for (let k = 1; k < g.length && tiles.size; k++) {
+                        const f = new Set(footprint(g[k]));
+                        tiles = new Set([...tiles].filter((t) => f.has(t)));
                     }
-                    else
-                        lays.set(ci, C[ci].layout(x.sel, x.pow));
+                    return tiles;
+                });
+                // per tile: the spots all of whose positions build on it
+                const sure = new Map();
+                sureOf.forEach((tiles, j) => { for (const t of tiles) {
+                    let l = sure.get(t);
+                    if (!l)
+                        sure.set(t, (l = []));
+                    l.push(j);
+                } });
+                const seen = new Set(), rows = [];
+                for (const js of sure.values()) {
+                    if (js.length < 2)
+                        continue;
+                    const k = js.join(",");
+                    if (seen.has(k))
+                        continue;
+                    seen.add(k);
+                    rows.push({ js, hi: 1 });
                 }
+                const cands = same.map((g) => g[0]);
+                v = { cands, same, rows, comp: new Comp(cands, dep.type, P.S, false, true) };
+                views.set(vk, v);
+                return v;
+            };
+            const realComps = new Map();
+            const real_comp = (ci) => {
+                let c = realComps.get(ci);
+                if (!c)
+                    realComps.set(ci, (c = new Comp(real_cands(ci), dep.type, P.S, false, true)));
+                return c;
+            };
+            const nogoods = new Map();
+            const nogoods_of = (ci) => nogoods.get(`${ci}|${level.get(ci) ?? 0}`) ?? [];
+            const mode = (it) => it.cis.map((ci) => `${level.get(ci) ?? 0}:${nogoods_of(ci).length}`).join(",");
+            const version = new Map(); // per item: changes when its options change
+            const tableCache = new Map();
+            const stats = (ci, t) => opts[ci].map((lay) => {
+                const [n, c] = kinds(lay, ci);
+                return { n, c, gain: lay.g[t] + (t === 4 ? COAL_FUEL_PER_MIN * c : 0) };
+            });
+            const table_of = (it, set) => {
+                const key = `${it.t}|${version.get(it.t) ?? 0}|${set.join(",")}`;
+                let tb = tableCache.get(key);
+                if (!tb) {
+                    tb = combine(set.map((ci) => stats(ci, it.t)));
+                    tableCache.set(key, tb);
+                }
+                return tb;
+            };
+            const T = (tb, N, Cc) => (N < 0 || Cc < 0 ? -Infinity : tb.top[Math.min(N, tb.nMax) * (tb.cMax + 1) + Math.min(Cc, tb.cMax)]);
+            const hostComps = new Map();
+            const host_comp = (set) => {
+                const key = set.map((ci) => `${ci}:${level.get(ci) ?? 0}`).join(",");
+                let h = hostComps.get(key);
+                if (!h) {
+                    const where = [], all = [], start = new Map();
+                    for (const ci of set) {
+                        start.set(ci, all.length);
+                        (view_of(ci)?.cands ?? C[ci].cands).forEach((c, j) => { all.push(c); where.push([ci, j]); });
+                    }
+                    h = { comp: new Comp(all, dep.type, P.S, false, false), where, start };
+                    hostComps.set(key, h);
+                }
+                return h;
+            };
+            const option_lays = (rest, tb, choice) => {
+                const lays = new Map();
+                choice.forEach((o, a) => lays.set(rest[a], opts[rest[a]][o]));
                 return lays;
             };
-            const value_at = (it, k, p, q) => {
-                const u = union_of(it);
-                const pow = k.sel.map((j, i) => (k.part[i] ? (u.comp.cands[j].kind === 1 ? p : q) : 1));
-                const keep = k.sel.map((_, i) => pow[i] > 0);
-                const sel = k.sel.filter((_, i) => keep[i]), pw = pow.filter((_, i) => keep[i]);
-                const l = u.comp.layout(sel, pw);
-                let coalRun = 0;
-                sel.forEach((j, i) => { if (u.comp.cands[j].kind === 0)
-                    coalRun += pw[i]; });
-                return { value: l.g[it.t] + (it.t === 4 ? COAL_FUEL_PER_MIN * coalRun : 0), sel, pow: pw };
+            /** host sets for (p, q) with their upper limits, best first */
+            const host_limits = (it, N, Cc, p, q) => {
+                const intP = p === 0 || p === 1, intQ = q === 0 || q === 1;
+                const N2 = N + (intP ? p : 0), C2 = Cc + (intQ ? q : 0), pp = intP ? 0 : p, qq = intQ ? 0 : q;
+                const limit = (set) => {
+                    const hs = table_of(it, set), rest = table_of(it, it.cis.filter((ci) => !set.includes(ci)));
+                    let best = -Infinity;
+                    for (let n = 0; n <= hs.nMax; n++) {
+                        for (let c = 0; c <= hs.cMax; c++) {
+                            const r = T(rest, N2 - n, C2 - c);
+                            if (r === -Infinity)
+                                continue;
+                            const v = (1 - pp) * (1 - qq) * T(hs, n, c) + pp * (1 - qq) * T(hs, n + 1, c) + (1 - pp) * qq * T(hs, n, c + 1) + pp * qq * T(hs, n + 1, c + 1) + r;
+                            if (v > best)
+                                best = v;
+                        }
+                    }
+                    return best;
+                };
+                // the partly powered nuclear plant in area a, the coal one in area b (each convex in its power)
+                const split = (a, b) => {
+                    const A = table_of(it, [a]), B = table_of(it, [b]), rest = table_of(it, it.cis.filter((ci) => ci !== a && ci !== b));
+                    const ap = [], bq = [];
+                    for (let n = 0; n <= A.nMax; n++)
+                        for (let c = 0; c <= A.cMax; c++)
+                            ap.push((1 - pp) * T(A, n, c) + pp * T(A, n + 1, c));
+                    for (let n = 0; n <= B.nMax; n++)
+                        for (let c = 0; c <= B.cMax; c++)
+                            bq.push((1 - qq) * T(B, n, c) + qq * T(B, n, c + 1));
+                    let best = -Infinity;
+                    for (let n1 = 0; n1 <= A.nMax && n1 <= N2; n1++)
+                        for (let c1 = 0; c1 <= A.cMax && c1 <= C2; c1++) {
+                            const va = ap[n1 * (A.cMax + 1) + c1];
+                            for (let n2 = 0; n2 <= B.nMax && n1 + n2 <= N2; n2++)
+                                for (let c2 = 0; c2 <= B.cMax && c1 + c2 <= C2; c2++) {
+                                    const v = va + bq[n2 * (B.cMax + 1) + c2] + T(rest, N2 - n1 - n2, C2 - c1 - c2);
+                                    if (v > best)
+                                        best = v;
+                                }
+                        }
+                    return best;
+                };
+                // one area holds both partly powered plants (or the only one), or (both kinds partly powered) two areas one each
+                const out = it.cis.map((ci) => ({ set: [ci], split: false, ub: limit([ci]) }));
+                if (!intP && !intQ)
+                    for (const a of it.cis)
+                        for (const b of it.cis)
+                            if (a !== b)
+                                out.push({ set: [a, b], split: true, ub: split(a, b) });
+                return out.sort((a, b) => b.ub - a.ub);
             };
-            /** a found layout reaching at least `target` at (p, q), without a search (null: none) */
-            const reached = (it, N, Cc, p, q, target) => {
-                for (const k of known.get(`${mode(it)}|${it.t}|${N}|${Cc}`) ?? []) {
-                    const v = value_at(it, k, p, q);
-                    if (v.value >= target - 1e-9 * Math.max(1, Math.abs(target)))
-                        return { value: v.value, lays: to_lays(it, v.sel, v.pow) };
-                }
-                return null;
-            };
-            const exact = (it, N, Cc, p, q) => {
-                const key = `${mode(it)}|${it.t}|${N}|${Cc}|${p}|${q}`;
+            /**
+             * The exact best at (N, C, p, q) and its layouts. With a target: stops as soon as a layout reaches it
+             * (exact: false; enough to know the target is reached), or knows without a search that none can.
+             */
+            const exact = (it, N, Cc, p, q, target = Infinity) => {
+                const key = `${mode(it)}|${it.t}|${version.get(it.t) ?? 0}|${N}|${Cc}|${p}|${q}`;
                 const hit = cache.get(key);
                 if (hit)
-                    return hit;
-                const u = union_of(it);
-                const r = u.comp.partialBest(H, it.t, N, Cc, p, q, it.cis.some((ci) => realMode.has(ci)));
-                const lays = to_lays(it, r ? r.sel : [], r ? r.pow : []);
-                if (r) {
-                    const kk = `${mode(it)}|${it.t}|${N}|${Cc}`, list = known.get(kk) ?? [];
-                    list.push({ sel: r.sel, part: r.part });
-                    known.set(kk, list);
+                    return { ...hit, upper: hit.value, exact: true };
+                const intP = p === 0 || p === 1, intQ = q === 0 || q === 1;
+                const N2 = N + (intP ? p : 0), C2 = Cc + (intQ ? q : 0), pp = intP ? 0 : p, qq = intQ ? 0 : q;
+                let out;
+                let complete = true, upper = -Infinity;
+                if (intP && intQ) {
+                    const all = table_of(it, it.cis);
+                    out = { value: T(all, N2, C2), lays: option_lays(it.cis, all, all.chooseAt(N2, C2)) };
                 }
-                const out = { value: r ? r.value : -Infinity, lays };
-                cache.set(key, out);
-                return out;
+                else {
+                    // host sets: one area (both partly powered plants there) or, with both kinds, two areas
+                    const order = host_limits(it, N, Cc, p, q);
+                    out = { value: -Infinity, lays: new Map() };
+                    for (const [k, { set, split, ub }] of order.entries()) {
+                        if (ub <= out.value + 1e-9 * Math.max(1, Math.abs(out.value)))
+                            break;
+                        if (out.value >= target - 1e-9 * Math.max(1, Math.abs(target))) {
+                            complete = false;
+                            upper = Math.max(upper, ...order.slice(k).map((x) => x.ub));
+                            break;
+                        }
+                        const h = host_comp([...set].sort((a, b) => a - b));
+                        const restCis = it.cis.filter((ci) => !set.includes(ci));
+                        const rest = table_of(it, restCis);
+                        const sk = `${key}|${set.join(",")}|${split}`;
+                        let sr = setCache.get(sk);
+                        if (!sr) {
+                            const extra = set.flatMap((ci) => [...(view_of(ci)?.rows ?? []), ...nogoods_of(ci)].map((x) => ({ js: x.js.map((j) => h.start.get(ci) + j), hi: x.hi })));
+                            // split: no partly powered coal plant in the first area, no nuclear one in the second
+                            const off = split ? h.where.map((_, j) => j).filter((j) => (h.where[j][0] === set[0]) === (h.comp.cands[j].kind === 0)) : [];
+                            const r = h.comp.partialBest(H, it.t, N2, C2, pp, qq, rest.points, HOST_SECONDS, extra, off);
+                            sr = null;
+                            if (r) {
+                                const lays = option_lays(restCis, rest, r.other >= 0 ? rest.choose(r.other) : restCis.map(() => 0));
+                                const per = new Map(set.map((ci) => [ci, { sel: [], pow: [] }]));
+                                r.sel.forEach((j, k) => { const [ci, lj] = h.where[j]; per.get(ci).sel.push(lj); per.get(ci).pow.push(r.pow[k]); });
+                                for (const [ci, x] of per) {
+                                    const v = view_of(ci);
+                                    lays.set(ci, v ? { ...v.comp.layout(x.sel, x.pow), src: v.cands } : C[ci].layout(x.sel, x.pow));
+                                }
+                                sr = { value: r.value, bound: r.bound, lays };
+                            }
+                            setCache.set(sk, sr);
+                        }
+                        if (sr && sr.bound > sr.value + 1e-9 * Math.max(1, Math.abs(sr.value))) {
+                            complete = false;
+                            upper = Math.max(upper, Math.min(ub, sr.bound));
+                        }
+                        if (!sr) {
+                            complete = false;
+                            upper = Math.max(upper, ub);
+                            continue;
+                        }
+                        if (sr.value <= out.value)
+                            continue;
+                        out = { value: sr.value, lays: new Map(sr.lays) };
+                    }
+                }
+                if (complete)
+                    cache.set(key, out);
+                return { ...out, upper: Math.max(upper, out.value), exact: complete };
             };
             // Plants of the search's result that do not fit on real positions: a table's layout is replaced by the
-            // area's exact best with the same plants (real positions, no overlap) and the table rebuilt; for a box's
-            // layout the item's exact values switch to real positions (its box corners are worked out again).
+            // area's exact best with the same plants (real positions, no overlap) and the table rebuilt; for a host's
+            // layout the combination is ruled out or the area goes to the next level (see view_of), and the item's
+            // box corners are worked out again.
             const fixedLays = new Set();
             const rebuild = (it) => {
+                version.set(it.t, (version.get(it.t) ?? 0) + 1);
                 it.table = combine(it.cis.map((ci) => opts[ci].map((lay) => {
                     const [n, c] = kinds(lay, ci);
                     return { n, c, gain: lay.g[it.t] + (it.t === 4 ? COAL_FUEL_PER_MIN * c : 0) };
                 })));
             };
+            let placedAny = false;
             const fit = (lays) => {
                 let n = 0;
                 for (const it of items) {
-                    let dirty = false, toReal = false;
+                    let dirty = false, cut = false;
                     for (const ci of it.cis) {
                         const l = lays[ci];
                         if (!l.sel.length || fixedLays.has(l))
@@ -1442,19 +1613,46 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                         const idx = opts[ci].indexOf(l);
                         if (idx >= 0) {
                             const [nn, cc] = kinds(l, ci);
-                            const ex = real_area(ci).comp.bestLayout(H, nn, cc) ?? { ...C[ci].layout([]), src: C[ci].cands };
+                            const ex = real_comp(ci).bestLayout(H, nn, cc) ?? { ...C[ci].layout([]), src: C[ci].cands };
                             fixedLays.add(ex);
                             opts[ci][idx] = ex;
                             dirty = true;
+                            continue;
                         }
-                        else if (!realMode.has(ci)) {
-                            realMode.add(ci);
-                            toReal = true;
+                        // a complete search for real positions the spots stand for: found on level 1 or 2 (same
+                        // deposits): use them. None: rule out the combination (a smaller part of it when that also
+                        // cannot fit). Undecided, or found with fewer deposits on level 0: the next level.
+                        const lv = level.get(ci) ?? 0, v = view_of(ci), Ps = getPositions();
+                        const lists = (g) => g.map((j) => (v ? v.same[j] : Ps.represented(C[ci].cands[j])));
+                        let g = [...new Set(l.sel)];
+                        const pr = placeable(lists(g)), own = v ? pr : null;
+                        if (own) {
+                            l.src = own;
+                            l.sel = own.map((_, k) => k);
+                            fixedLays.add(l);
+                            placedAny = true;
+                        }
+                        else if (pr === false) {
+                            for (let k = g.length - 1; k >= 0 && g.length > 2; k--) {
+                                const h = g.filter((_, x) => x !== k);
+                                if (placeable(lists(h), 200_000) === false)
+                                    g = h;
+                            }
+                            const nk = `${ci}|${lv}`;
+                            let list = nogoods.get(nk);
+                            if (!list)
+                                nogoods.set(nk, (list = []));
+                            list.push({ js: g.sort((a, b) => a - b), hi: g.length - 1 });
+                            cut = true;
+                        }
+                        else if (lv < 2) {
+                            level.set(ci, lv + 1);
+                            cut = true;
                         }
                     }
                     if (dirty)
                         rebuild(it);
-                    if (dirty || toReal) {
+                    if (dirty || cut) {
                         // every corner is worked out again (exact values may now be lower)
                         for (const list of it.boxes.values())
                             for (const b of list)
@@ -1475,9 +1673,9 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                         it.table.choose(e.point).forEach((o, a) => { lays[it.cis[a]] = opts[it.cis[a]][o]; });
                         return;
                     }
-                    const r = reached(it, e.N, e.C, e.p, e.q, e.val) ?? exact(it, e.N, e.C, e.p, e.q);
+                    const r = exact(it, e.N, e.C, e.p, e.q, e.val);
                     if (r.value < e.val - 1e-9 * Math.max(1, Math.abs(e.val)))
-                        inexact.push({ it, key: e.key, box: e.box, p: e.p, q: e.q, value: r.value });
+                        inexact.push({ it, key: e.key, box: e.box, p: e.p, q: e.q, value: r.upper, exact: r.exact });
                     if (r.value === -Infinity) {
                         it.table.chooseAt(e.N, e.C).forEach((o, a) => { lays[it.cis[a]] = opts[it.cis[a]][o]; });
                     }
@@ -1494,13 +1692,17 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
             const tighten = (x) => {
                 const list = x.it.boxes.get(x.key), box = list[x.box];
                 let changed = false;
-                const ex = (p, q) => Math.min(...box.verts.filter((v) => v.p === p && v.q === q).map((v) => v.val), exact(x.it, box.N, box.C, p, q).value);
-                for (const v of box.verts)
-                    if (!v.exact) {
-                        v.val = Math.min(v.val, exact(x.it, box.N, box.C, v.p, v.q).value);
-                        v.exact = true;
+                for (const v of box.verts) {
+                    if (v.exact)
+                        continue;
+                    const r = exact(x.it, box.N, box.C, v.p, v.q);
+                    if (r.upper < v.val - 1e-9 * Math.max(1, Math.abs(v.val)))
                         changed = true;
-                    }
+                    v.val = Math.min(v.val, r.upper);
+                    v.exact = r.exact;
+                    if (r.exact)
+                        changed = true;
+                }
                 // the corners (p, q at 0 or 1: quick) of the neighbouring cells too: the search often moves there next
                 for (let dn = -1; dn <= 1; dn++)
                     for (let dc = -1; dc <= 1; dc++) {
@@ -1522,15 +1724,26 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                 if (!splitP && !splitQ)
                     return changed;
                 const pp = splitP ? [ps[0], x.p, ps[1]] : ps, qq = splitQ ? [qs[0], x.q, qs[1]] : qs;
-                const val = (p, q) => box.verts.find((v) => v.p === p && v.q === q)?.val ?? ex(p, q);
+                // new corners: worked out now (a search round costs far more than these)
+                const val = (p, q) => {
+                    const old = box.verts.find((v) => v.p === p && v.q === q);
+                    if (old)
+                        return old;
+                    if (p === x.p && q === x.q && x.exact)
+                        return { val: x.value, exact: true };
+                    const r = exact(x.it, box.N, box.C, p, q);
+                    return { val: p === x.p && q === x.q ? Math.min(r.upper, x.value) : r.upper, exact: r.exact };
+                };
                 const parts = [];
                 for (let a = 0; a + 1 < pp.length || (pp.length === 1 && a === 0); a++) {
                     for (let b = 0; b + 1 < qq.length || (qq.length === 1 && b === 0); b++) {
                         const p2 = pp.length === 1 ? [pp[0]] : [pp[a], pp[a + 1]], q2 = qq.length === 1 ? [qq[0]] : [qq[b], qq[b + 1]];
                         const verts = [];
                         for (const q of q2)
-                            for (const p of p2)
-                                verts.push({ p, q, val: val(p, q), exact: true });
+                            for (const p of p2) {
+                                const v = val(p, q);
+                                verts.push({ p, q, val: v.val, exact: v.exact });
+                            }
                         parts.push({ N: box.N, C: box.C, verts });
                     }
                 }
@@ -1577,9 +1790,11 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
             hooks.layout({ score: bestVal, exact: true, bound: Infinity, plants: bestPlants() });
             try {
                 for (let pass = 1;; pass++) {
+                    // only layouts that beat the best one are searched (HiGHS stops when its limit is within the gap)
+                    const cutoff = bestVal;
                     hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""}…`, best: bestVal, ...(Number.isFinite(bound) ? { bound } : {}) });
                     const sols = [];
-                    const res = P.partialMip(gap, items, plain, groups, (x, score) => sols.push({ x, score }), (_, b) => hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""}`, best: bestVal, bound: Math.min(bound, b) }));
+                    const res = P.partialMip(gap, items, plain, groups, (x, score) => sols.push({ x, score }), (_, b) => hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""}`, best: bestVal, bound: Math.min(bound, Math.max(b, cutoff)) }), cutoff);
                     if (Number.isFinite(res.bound))
                         bound = Math.min(bound, Math.max(res.bound, bestVal));
                     // found layouts whose own (upper limit) score could beat the best real one, and the final one
@@ -1619,7 +1834,15 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                     if (order.length)
                         hooks.progress({ step: "search", message: `Working out ${order.length} limit${order.length > 1 ? "s" : ""} for partly powered plants exactly…`, best: bestVal, bound });
                     const tightened = order.map(tighten).filter(Boolean).length;
+                    placedAny = false;
                     const fixes = fit(last.lays);
+                    if (placedAny) {
+                        const r = real(last.lays);
+                        if (r.v > bestVal + 1e-12) {
+                            take(r.v, last.lays, r.plants);
+                            hooks.layout({ score: bestVal, exact: true, bound, plants: bestPlants() });
+                        }
+                    }
                     if (!tightened && !newPairs && !fixes)
                         break;
                     const changed = tightened + newPairs + fixes;
@@ -1627,10 +1850,12 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                 }
             }
             finally {
-                for (const u of realUnions.values())
-                    u.comp.dispose();
-                for (const a of realArea.values())
-                    a.comp.dispose();
+                for (const h of hostComps.values())
+                    h.comp.dispose();
+                for (const v of views.values())
+                    v.comp.dispose();
+                for (const c of realComps.values())
+                    c.dispose();
             }
             return finish_up();
         };
