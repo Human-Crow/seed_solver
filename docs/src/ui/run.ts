@@ -147,7 +147,8 @@ function on_solver(r: Run, m: { type: string; [k: string]: unknown }) {
         evaluate(rep.plants, (d, plants) => on_details(r, d, plants));
         if (m.type === "done") {
             const gap = rep.bound > 0 ? (rep.bound - rep.score) / rep.bound : 0;
-            finish(r, gap <= 1e-9 ? "Done: this is the best layout (proven)." :
+            finish(r, !Number.isFinite(rep.bound) ? "Done: the best layout found (not proven: the search ran out of memory)." :
+                gap <= 1e-9 ? "Done: this is the best layout (proven)." :
                 `Done: proven to be within ${fmt_gap(gap)} of the best possible.`);
         }
     } else if (m.type === "error") {

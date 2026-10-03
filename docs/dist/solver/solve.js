@@ -179,44 +179,41 @@ class Comp {
                 this.nfc[pv(j)] = NUCLEAR_FUEL_PER_MIN;
         });
     }
-    neighbours = null;
     exclusiveAll = false;
-    /** positions sharing a boosted tile with position j */
-    near(j) {
-        if (!this.neighbours) {
-            const by = new Map();
-            this.cands.forEach((c, k) => c.cover.forEach((d) => { let l = by.get(d); if (!l)
-                by.set(d, (l = [])); l.push(k); }));
-            const sets = this.cands.map(() => new Set());
-            for (const ks of by.values())
-                for (const a of ks)
-                    for (const b of ks)
-                        if (a !== b)
-                            sets[a].add(b);
-            this.neighbours = sets.map((st) => [...st]);
-        }
-        return this.neighbours[j];
-    }
     /**
      * If a layout has a partly powered plant in this area, every position of the area gets the rule
-     * "only partly powered when none of the positions sharing its tiles is built" (y_k + y_j - f_j <= 1), so
+     * "only partly powered when no other plant reaches its tiles" (one row per deposit, see below), so
      * the next search cannot just move the partial power to a neighbour. Returns how many plants broke it.
      */
     exclusive(l) {
-        const built = new Set(l.sel);
+        // how many built plants reach each deposit
+        const reach = new Map();
+        for (const j of l.sel)
+            for (const d of this.cands[j].cover)
+                reach.set(d, (reach.get(d) ?? 0) + 1);
         let broken = 0, partial = false;
         l.sel.forEach((j, k) => {
             if (l.pow[k] >= 1)
                 return;
             partial = true;
-            if (this.near(j).some((q) => built.has(q)))
+            if ([...this.cands[j].cover].some((d) => reach.get(d) > 1))
                 broken++;
         });
         if (partial && !this.exclusiveAll) {
             this.exclusiveAll = true;
-            for (let j = 0; j < this.nK; j++)
-                for (const q of this.near(j))
-                    this.rows.push({ cols: [q, j, this.fullVar(j)], vals: [1, 1, -1], hi: 1 });
+            // one row per deposit (not per pair of positions: that is millions of rows on big worlds):
+            // built plants reaching it + (M - 1) * partly powered ones reaching it <= M, M = positions reaching it.
+            // A partly powered plant there leaves room for itself only; without one the row allows everything.
+            const by = new Map();
+            this.cands.forEach((c, k) => c.cover.forEach((d) => { let l = by.get(d); if (!l)
+                by.set(d, (l = [])); l.push(k); }));
+            for (const ks of by.values()) {
+                const M = ks.length;
+                if (M < 2)
+                    continue;
+                // y_j + (M - 1) (y_j - f_j): coefficient M on y_j, -(M - 1) on f_j
+                this.rows.push({ cols: [...ks, ...ks.map((j) => this.fullVar(j))], vals: [...ks.map(() => M), ...ks.map(() => -(M - 1))], hi: M });
+            }
         }
         return broken;
     }
@@ -868,7 +865,25 @@ export function solve(H, world, settings, gap, hooks) {
         progress: (p) => hooks.progress({ step: p.step, message: `Full power first: ${p.message.charAt(0).toLowerCase()}${p.message.slice(1)}`, ...(p.best !== undefined ? { best: p.best } : {}) }),
         layout: (l) => hooks.layout({ ...l, bound: Infinity }),
     }, null);
-    return solve_core(H, world, settings, gap, hooks, full);
+    // The partly powered search can need a lot of memory on very big worlds (HiGHS then aborts). Then the best
+    // layout found so far is kept: the full-power one or a better one this search already reported.
+    let best = full, bound = Infinity;
+    try {
+        return solve_core(H, world, settings, gap, {
+            progress: hooks.progress,
+            layout: (l) => {
+                if (Number.isFinite(l.bound))
+                    bound = Math.min(bound, l.bound);
+                if (l.exact && l.score > best.score)
+                    best = l;
+                hooks.layout(l);
+            },
+        }, full);
+    }
+    catch (e) {
+        hooks.progress({ step: "search", message: `The search for partly powered plants ran out of memory (${e instanceof Error ? e.message.split(".")[0] : e}); keeping the best layout found.`, best: best.score });
+        return { ...best, bound: Number.isFinite(bound) ? Math.max(bound, best.score) : Infinity };
+    }
 }
 function solve_core(H, world, settings, gap, hooks, start) {
     const t0 = performance.now();
