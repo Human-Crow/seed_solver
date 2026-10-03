@@ -1107,8 +1107,6 @@ export function solve(H: HighsRuntime, world: WorldInput, settings: SolverSettin
 
 function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings, gap: number, hooks: Hooks, start: LayoutReport | null,
                     share: Shared = {}): LayoutReport {
-    const t0 = performance.now();
-    const secs = () => ((performance.now() - t0) / 1000).toFixed(0) + " s";
     const dep = to_deposits(world);
     hooks.progress({ step: "setup", message: `${dep.count} deposit tiles; finding power plant spots…` });
     const spots = settings.spots ?? "reduced";
@@ -1174,7 +1172,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                         }
                     }
                 }
-                if (bestVal > before + 1e-12) hooks.progress({ step: "search", message: `Tidied up the partly powered plants (${secs()})`, best: bestVal, bound });
+                if (bestVal > before + 1e-12) hooks.progress({ step: "search", message: `Tidied up the partly powered plants`, best: bestVal, bound });
             }
             bound = Math.max(bound, bestVal);
             const rep = { score: bestVal, exact: true, bound, plants: bestPlants() };
@@ -1197,7 +1195,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
             bestVal = start!.score; startPlants = start!.plants;
             let options = share.options;
             if (!options) {
-                hooks.progress({ step: "search", message: `Listing the useful layouts per area (${secs()})…`, best: bestVal });
+                hooks.progress({ step: "search", message: `Listing the useful layouts per area…`, best: bestVal });
                 options = C.map((c) => { const f = new Comp(c.cands, dep.type, P.S, false, false); const o = f.options(H); f.dispose(); return o; });
             }
             const opts = options;
@@ -1435,10 +1433,10 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
             hooks.layout({ score: bestVal, exact: true, bound: Infinity, plants: bestPlants() });
             try {
                 for (let pass = 1; ; pass++) {
-                    hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""} (${secs()})…`, best: bestVal, ...(Number.isFinite(bound) ? { bound } : {}) });
+                    hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""}…`, best: bestVal, ...(Number.isFinite(bound) ? { bound } : {}) });
                     const sols: { x: Float64Array; score: number }[] = [];
                     const res = P.partialMip(gap, items, plain, groups, (x, score) => sols.push({ x, score }),
-                        (_, b) => hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""} (${secs()})`, best: bestVal, bound: Math.min(bound, b) }));
+                        (_, b) => hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""}`, best: bestVal, bound: Math.min(bound, b) }));
                     if (Number.isFinite(res.bound)) bound = Math.min(bound, Math.max(res.bound, bestVal));
                     // found layouts whose own (upper limit) score could beat the best real one, and the final one
                     const before = bestVal;
@@ -1447,6 +1445,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                     let better = false, last: ReturnType<typeof assemble> | null = null;
                     const allInexact: ReturnType<typeof assemble>["inexact"] = [];
                     let newPairs = 0;
+                    hooks.progress({ step: "search", message: `Checking the partly powered plants of ${check.length} found layout${check.length > 1 ? "s" : ""} exactly…`, best: bestVal, ...(Number.isFinite(bound) ? { bound } : {}) });
                     for (const { x } of check) {
                         const ch = res.decode(x);
                         const a = assemble(ch);
@@ -1463,11 +1462,12 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                     const uniq = new Map<string, (typeof allInexact)[number]>();
                     for (const x of allInexact) { const k = `${x.it.t}|${x.key}|${x.box}`; if (!uniq.has(k)) uniq.set(k, x); }
                     const order = [...uniq.values()].sort((a, b) => a.it.t - b.it.t || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) || b.box - a.box);
+                    if (order.length) hooks.progress({ step: "search", message: `Working out ${order.length} limit${order.length > 1 ? "s" : ""} for partly powered plants exactly…`, best: bestVal, bound });
                     const tightened = order.map(tighten).filter(Boolean).length;
                     const fixes = fit(last.lays);
                     if (!tightened && !newPairs && !fixes) break;
                     const changed = tightened + newPairs + fixes;
-                    hooks.progress({ step: "search", message: `Partly powered plants: ${changed} limit${changed > 1 ? "s" : ""} made exact${fixes ? ` (plants did not fit in ${fixes} item${fixes > 1 ? "s" : ""})` : ""}; searching again (${secs()})`, best: bestVal, bound });
+                    hooks.progress({ step: "search", message: `Partly powered plants: ${changed} limit${changed > 1 ? "s" : ""} made exact${fixes ? ` (plants did not fit in ${fixes} item${fixes > 1 ? "s" : ""})` : ""}; searching again`, best: bestVal, bound });
                 }
             } finally {
                 for (const u of realUnions.values()) u.comp.dispose();
@@ -1503,7 +1503,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                 }
             });
             val = m.val + extra;
-            hooks.progress({ step: "bound", message: `Working out the proven maximum: round ${round}, ${added} better layouts (${secs()})` });
+            hooks.progress({ step: "bound", message: `Working out the proven maximum: round ${round}, ${added} better layouts` });
             if (!added) break;
         }
         bound = val;
@@ -1529,7 +1529,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
         let options: (Layout[] | null)[] = [];
         let mixed: (MixedOptions | null)[] = [];
         if (!settings.partial && !closed()) {
-            hooks.progress({ step: "search", message: `Listing the useful layouts per area (${secs()})…`, best: bestVal, bound });
+            hooks.progress({ step: "search", message: `Listing the useful layouts per area…`, best: bestVal, bound });
             options = C.map((c) => c.options(H));
             mixed = C.map((c, ci) => (options[ci] ? null : c.mixedOptions(H, dep.type)));
         }
@@ -1572,7 +1572,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                     // the real best so far; the page shows the layout's exact score once it is scored
                     if (score > bestVal + 1e-12) hooks.layout({ score: settings.partial ? bestVal : score, exact: false, bound: Math.min(bound, b), plants: placedPlants(lays) });
                 },
-                (best, b) => hooks.progress({ step: "search", message: `Searching for better layouts${pass > 1 ? ` (round ${pass})` : ""} (${secs()})`, best: Math.max(best, bestVal), bound: Math.min(bound, b) }),
+                (best, b) => hooks.progress({ step: "search", message: `Searching for better layouts${pass > 1 ? ` (round ${pass})` : ""}`, best: Math.max(best, bestVal), bound: Math.min(bound, b) }),
                 options, mixed);
             if (res.lays) {
                 const r = real(res.lays);
@@ -1592,7 +1592,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                     if (res.lays && res.optimal && !closed()) {
                         const n = refine(res.lays);
                         if (n) {
-                            hooks.progress({ step: "search", message: `Plants did not fit in ${n} area${n > 1 ? "s" : ""}: correcting ${n > 1 ? "those layouts" : "that layout"} (${secs()})`, best: bestVal, bound });
+                            hooks.progress({ step: "search", message: `Plants did not fit in ${n} area${n > 1 ? "s" : ""}: correcting ${n > 1 ? "those layouts" : "that layout"}`, best: bestVal, bound });
                             continue;
                         }
                     }
@@ -1613,7 +1613,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                 if (res.optimal) bound = Math.min(bound, Math.max(bestVal, res.score, Number.isFinite(res.bound) ? res.bound : res.score));
                 break;
             }
-            hooks.progress({ step: "search", message: `${broken} partly powered plant${broken > 1 ? "s" : ""} shared tiles with other plants; searching again (${secs()})`, best: bestVal, bound });
+            hooks.progress({ step: "search", message: `${broken} partly powered plant${broken > 1 ? "s" : ""} shared tiles with other plants; searching again`, best: bestVal, bound });
         }
         exactComps.forEach((c) => c?.dispose());
         if (!settings.partial && options.length) share.options = options;
