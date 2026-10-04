@@ -1001,7 +1001,7 @@ export class Problem {
      * values mixed with the same weights (an upper limit: the best value is convex in p and q). Areas without
      * a table (several raw items) are searched plant by plant with partial power (optimistic on shared tiles).
      */
-    partialMip(gap, items, plain, groups, onImproving, onLog, cutoff = -Infinity) {
+    partialMip(gap, items, plain, groups, onImproving, onLog, cutoff = -Infinity, plainComp = (ci) => this.comps[ci], plainRows = () => []) {
         const { M, H } = this;
         const nI = M.nI;
         const cols = new Columns();
@@ -1017,13 +1017,13 @@ export class Problem {
         let rowBase = nI + 14;
         const offsets = new Map();
         for (const ci of plain) {
-            const c = this.comps[ci];
+            const c = plainComp(ci);
             offsets.set(ci, cols.count);
             // plants reaching one raw item only: partly powered = built (y) and not fully powered (f)
             const only = c.cands.map((q) => { const its = new Set([...q.cover, ...q.foot].map((d) => this.dep.type[d])); return its.size === 1 ? [...its][0] : -1; });
             // the area's rows, and per group of overlapping partly powered plants its rows (group_rows)
             const extra = group_rows(c, groups.get(ci) ?? []);
-            const all = [...c.rows, ...extra.rows];
+            const all = [...c.rows, ...extra.rows, ...plainRows(ci).map((r) => ({ cols: r.js, vals: r.js.map(() => 1), hi: r.hi }))];
             const byVar = Array.from({ length: c.nv + extra.n }, () => ({ rows: [], vals: [] }));
             all.forEach((r, n) => r.cols.forEach((v, k) => { byVar[v].rows.push(n); byVar[v].vals.push(r.vals[k]); }));
             for (let v = 0; v < c.nv + extra.n; v++) {
@@ -1107,9 +1107,10 @@ export class Problem {
             });
             const plainLays = new Map();
             for (const ci of plain) {
-                const c = this.comps[ci];
+                const c = plainComp(ci);
                 const [sel, pow] = pick(c.nK, x, offsets.get(ci), (j) => c.powVar(j), c.partial);
-                plainLays.set(ci, c.layout(sel, pow));
+                const l = c.layout(sel, pow);
+                plainLays.set(ci, c === this.comps[ci] ? l : { ...l, src: c.cands });
             }
             return { per, plainLays };
         };
@@ -1237,7 +1238,8 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
         let bestReal = [];
         const take = (v, lays, plants) => { bestVal = v; bestLays = lays; bestReal = plants; startPlants = null; };
         const bestPlants = () => startPlants ?? bestReal;
-        const closed = () => bound - bestVal <= gap * Math.max(1, Math.abs(bound));
+        // (plus rounding noise: with gap 0 a bound 1e-15 above the best is still closed)
+        const closed = () => bound - bestVal <= (gap + 1e-12) * Math.max(1, Math.abs(bound));
         if (!C.length) {
             bestVal = P.evaluate([]);
             bound = bestVal;
@@ -1753,10 +1755,49 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
             // groups of overlapping partly powered plants per plain area (group_rows), added when a search used them:
             // per tile the partly powered plants reaching it, and per kind those of that kind
             const groups = new Map();
+            const plainViews = new Map();
+            const plain_view = (ci, lv) => {
+                const byKey = new Map();
+                real_cands(ci).forEach((q, k) => {
+                    const key = lv < 2 ? `${q.kind}|${q.cover.join(",")}|${q.foot.join(",")}` : String(k);
+                    let g = byKey.get(key);
+                    if (!g)
+                        byKey.set(key, (g = []));
+                    g.push(q);
+                });
+                const same = [...byKey.values()];
+                const sure = new Map();
+                same.forEach((g, j) => {
+                    let tiles = new Set(footprint(g[0]));
+                    for (let k = 1; k < g.length && tiles.size; k++) {
+                        const f = new Set(footprint(g[k]));
+                        tiles = new Set([...tiles].filter((t) => f.has(t)));
+                    }
+                    for (const t of tiles) {
+                        let l = sure.get(t);
+                        if (!l)
+                            sure.set(t, (l = []));
+                        l.push(j);
+                    }
+                });
+                const seen = new Set(), rows = [];
+                for (const js of sure.values()) {
+                    if (js.length < 2)
+                        continue;
+                    const k = js.join(",");
+                    if (!seen.has(k)) {
+                        seen.add(k);
+                        rows.push({ js, hi: 1 });
+                    }
+                }
+                return { lv, same, rows, comp: new Comp(same.map((g) => g[0]), dep.type, P.S, true, false) };
+            };
+            const plainComp = (ci) => plainViews.get(ci)?.comp ?? C[ci];
+            const plainRows = (ci) => plainViews.get(ci)?.rows ?? [];
             const add_groups = (plainLays) => {
                 let added = 0;
                 for (const [ci, l] of plainLays) {
-                    const c = C[ci], list = groups.get(ci) ?? [];
+                    const c = plainComp(ci), list = groups.get(ci) ?? [];
                     const seen = new Set(list.map((g) => g.join(",")));
                     const part = l.sel.filter((_, k) => l.pow[k] < 1);
                     const at = new Map();
@@ -1794,7 +1835,7 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                     const cutoff = bestVal;
                     hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""}…`, best: bestVal, ...(Number.isFinite(bound) ? { bound } : {}) });
                     const sols = [];
-                    const res = P.partialMip(gap, items, plain, groups, (x, score) => sols.push({ x, score }), (_, b) => hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""}`, best: bestVal, bound: Math.min(bound, Math.max(b, cutoff)) }), cutoff);
+                    const res = P.partialMip(gap, items, plain, groups, (x, score) => sols.push({ x, score }), (_, b) => hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""}`, best: bestVal, bound: Math.min(bound, Math.max(b, cutoff)) }), cutoff, plainComp, plainRows);
                     if (Number.isFinite(res.bound))
                         bound = Math.min(bound, Math.max(res.bound, bestVal));
                     // found layouts whose own (upper limit) score could beat the best real one, and the final one
@@ -1805,6 +1846,8 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                     let better = false, last = null;
                     const allInexact = [];
                     let newPairs = 0;
+                    const toView = new Map();
+                    let cuts = 0;
                     hooks.progress({ step: "search", message: `Checking the partly powered plants of ${check.length} found layout${check.length > 1 ? "s" : ""} exactly…`, best: bestVal, ...(Number.isFinite(bound) ? { bound } : {}) });
                     for (const { x } of check) {
                         const ch = res.decode(x);
@@ -1812,6 +1855,53 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                         last = a;
                         allInexact.push(...a.inexact);
                         newPairs += add_groups(ch.plainLays);
+                        // plain areas: placed on real positions now, so the exact score below is the layout's own
+                        const Ps = getPositions();
+                        for (const [ci, l] of ch.plainLays) {
+                            if (!l.sel.length)
+                                continue;
+                            const v = plainViews.get(ci);
+                            if (!v) {
+                                // spots: the quick placement, else a complete search for positions at least as good
+                                // (boosting every deposit the spot boosts, building over no other); none: a finer view
+                                const cs = C[ci].cands;
+                                if (!realize(l.sel.map((j, k) => ({ cand: cs[j], pow: l.pow[k] })), getPositions).failed)
+                                    continue;
+                                const own = placeable(l.sel.map((j) => Ps.alternatives(cs[j], false)));
+                                if (own) {
+                                    l.src = own;
+                                    l.sel = own.map((_, k) => k);
+                                }
+                                else if (!toView.has(ci))
+                                    toView.set(ci, 1);
+                                continue;
+                            }
+                            // a view's groups: on their own positions, or proven not to fit together (a no-good, made
+                            // as small as possible), or undecided (every position on its own next time)
+                            const sel = l.sel.slice();
+                            const own = placeable(sel.map((j) => v.same[j]));
+                            if (own) {
+                                l.src = own;
+                                l.sel = own.map((_, k) => k);
+                                continue;
+                            }
+                            if (own === false) {
+                                let g = [...new Set(sel)];
+                                for (let k = g.length - 1; k >= 0 && g.length > 2; k--) {
+                                    const h = g.filter((_, q) => q !== k);
+                                    if (placeable(h.map((j) => v.same[j]), 200_000) === false)
+                                        g = h;
+                                }
+                                g.sort((a, b) => a - b);
+                                const key = g.join(",");
+                                if (!v.rows.some((r) => r.hi === r.js.length - 1 && r.js.join(",") === key)) {
+                                    v.rows.push({ js: g, hi: g.length - 1 });
+                                    cuts++;
+                                }
+                            }
+                            else if (v.lv < 2 && !toView.has(ci))
+                                toView.set(ci, 2);
+                        }
                         const r = real(a.lays);
                         if (r.v > bestVal + 1e-12) {
                             take(r.v, a.lays, r.plants);
@@ -1843,9 +1933,14 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                             hooks.layout({ score: bestVal, exact: true, bound, plants: bestPlants() });
                         }
                     }
-                    if (!tightened && !newPairs && !fixes)
+                    for (const [ci, lv] of toView) {
+                        plainViews.get(ci)?.comp.dispose();
+                        plainViews.set(ci, plain_view(ci, lv));
+                        groups.delete(ci); // its groups were positions of the old view
+                    }
+                    if (!tightened && !newPairs && !fixes && !toView.size && !cuts)
                         break;
-                    const changed = tightened + newPairs + fixes;
+                    const changed = tightened + newPairs + fixes + toView.size + cuts;
                     hooks.progress({ step: "search", message: `Partly powered plants: ${changed} limit${changed > 1 ? "s" : ""} made exact${fixes ? ` (plants did not fit in ${fixes} item${fixes > 1 ? "s" : ""})` : ""}; searching again`, best: bestVal, bound });
                 }
             }
@@ -1856,6 +1951,8 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                     v.comp.dispose();
                 for (const c of realComps.values())
                     c.dispose();
+                for (const v of plainViews.values())
+                    v.comp.dispose();
             }
             return finish_up();
         };
