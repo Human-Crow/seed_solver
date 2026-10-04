@@ -484,3 +484,60 @@ body {
     flex: none;
     border-radius: 18%;      /* soft corners, like an app icon */
 }
+
+/* Extractor boost table: more compact, so all columns fit on a phone */
+#boost_table {
+    margin-bottom: 8px;
+}
+
+#boost_table th {
+    font-size: 15px;
+}
+
+#boost_table td {
+    font-size: 18px;
+    padding-top: 1px;
+    padding-bottom: 1px;
+}
+
+#boost_table .item-img {
+    width: 24px;
+    height: 24px;
+    display: block;
+}
+
+/* Deposits: one row of 7 tiles (icon with its count underneath), as wide as the buttons */
+#deposit_table,
+#deposit_table tbody {
+    display: block;
+    width: var(--btn-w);
+}
+
+#deposit_table tr {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 5px;
+}
+
+#deposit_table caption {
+    display: block;
+    margin-bottom: 6px;
+    text-align: left;
+    font-size: 18px;
+    color: #bbb;
+}
+
+#deposit_table td.deposit-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 0;
+    font-size: 16px;
+    background-color: var(--panel);
+    border-radius: var(--radius-sm);
+}
+
+#deposit_table .deposit-none {
+    opacity: 0.4;
+}

@@ -24,10 +24,10 @@ function show_deposits(world) {
         if (k >= 0 && k <= 6)
             tiles[k]++;
     }
-    const head = `<tr><th></th><th class="num">Tiles</th></tr>`;
-    const rows = RAW_ITEMS.map((item, k) => `<tr><td><img class="item-img" src="assets/${item}.png" alt="${pretty(item)}" title="${pretty(item)}"></td>` +
-        `<td class="num">${tiles[k]}</td></tr>`).join("");
-    deposit_table.innerHTML = head + rows;
+    // one row of tiles: icon with its tile count underneath (wraps on narrow screens)
+    const cells = RAW_ITEMS.map((item, k) => `<td class="deposit-cell${tiles[k] ? "" : " deposit-none"}" title="${pretty(item)}">` +
+        `<img class="item-img" src="assets/${item}.png" alt="${pretty(item)}"><span>${tiles[k]}</span></td>`).join("");
+    deposit_table.innerHTML = `<caption>Deposit tiles per resource</caption><tr>${cells}</tr>`;
     deposit_block.classList.remove("hidden");
     shown = { gen2: world.gen2, tiles };
     update_world_link();
