@@ -791,7 +791,9 @@ export class Problem {
             onLog: (best: number, bound: number) => void,
             options: (Layout[] | null)[] = [],
             mixed: (MixedOptions | null)[] = [],
-            seconds = Infinity): { optimal: boolean; score: number; bound: number; lays: Layout[] | null } {
+            seconds = Infinity,
+            plainCompOf: (ci: number) => Comp = (ci) => this.comps[ci]!,
+            plainExtra: (ci: number) => { js: number[]; hi: number }[] = () => []): { optimal: boolean; score: number; bound: number; lays: Layout[] | null } {
         const { M, H } = this;
         const nI = M.nI;
         const cols = new Columns();
@@ -810,7 +812,12 @@ export class Problem {
         let rowBase = nI;
         const isPlain = (ci: number) => !options[ci] && !mixed[ci];
         const mixedRows = mixed.reduce((a, mo) => a + (mo ? 1 + mo.subsets.reduce((b, sb) => b + sb.parts.length, 0) : 0), 0);
-        const plainRows = this.comps.reduce((a, c, ci) => a + (isPlain(ci) ? c.rows.length : 0), 0) + mixedRows;
+        // a plain area's rows: its own, and extra ones (a finer view's "at most one" rows and no-goods)
+        const areaRowsOf = (ci: number) => {
+            const c = plainCompOf(ci);
+            return [...c.rows, ...plainExtra(ci).map((r) => ({ cols: r.js, vals: r.js.map(() => 1), hi: r.hi }))];
+        };
+        const plainRows = this.comps.reduce((a, _, ci) => a + (isPlain(ci) ? areaRowsOf(ci).length : 0), 0) + mixedRows;
         const nPlain = this.comps.filter((_, ci) => isPlain(ci)).length;
         const rowN = nI + plainRows + tables.length, rowC = rowN + 1;
         // per plain area: its own nuclear / coal totals (rows after the overall totals)
@@ -845,22 +852,24 @@ export class Problem {
                 }
                 return;
             }
-            const byVar = c.colsByVar();
-            for (let v = 0; v < c.nv; v++) {
+            const pc = plainCompOf(ci), all = areaRowsOf(ci);
+            const byVar = Array.from({ length: pc.nv }, () => ({ rows: [] as number[], vals: [] as number[] }));
+            all.forEach((r, n) => r.cols.forEach((v, k) => { byVar[v]!.rows.push(n); byVar[v]!.vals.push(r.vals[k]!); }));
+            for (let v = 0; v < pc.nv; v++) {
                 const rows: number[] = [], vals: number[] = [];
-                M.rawRows.forEach((row, r) => { const g = c.G[r * c.nv + v]!; if (g !== 0) { rows.push(row); vals.push(g); } });
-                if (c.nfc[v]) { rows.push(M.fcRow); vals.push(-c.nfc[v]!); }
+                M.rawRows.forEach((row, r) => { const g = pc.G[r * pc.nv + v]!; if (g !== 0) { rows.push(row); vals.push(g); } });
+                if (pc.nfc[v]) { rows.push(M.fcRow); vals.push(-pc.nfc[v]!); }
                 const order = rows.map((_, i) => i).sort((a, b) => rows[a]! - rows[b]!);
                 const rr = [...order.map((i) => rows[i]!), ...byVar[v]!.rows.map((q) => q + rowBase)];
                 const vv = [...order.map((i) => vals[i]!), ...byVar[v]!.vals];
-                if (v < c.nK) {
-                    const nuc = c.cands[v]!.kind === 1;
+                if (v < pc.nK) {
+                    const nuc = pc.cands[v]!.kind === 1;
                     rr.push(nuc ? rowN : rowC, areaRow[ci]! + (nuc ? 0 : 1)); vv.push(1, 1);
                 }
-                cols.add(rr, vv, 0, c.ub[v]!, 0, c.isInt(v));
+                cols.add(rr, vv, 0, pc.ub[v]!, 0, pc.isInt(v));
             }
-            for (const r of c.rows) { lower.push(-Infinity); upper.push(r.hi); }
-            rowBase += c.rows.length;
+            for (const r of all) { lower.push(-Infinity); upper.push(r.hi); }
+            rowBase += all.length;
         });
         const tOffsets: number[] = [];
         for (const { t, table } of tables) {
@@ -910,8 +919,10 @@ export class Problem {
                     }
                     return c.layout(sel);
                 }
-                const [sel, pow] = pick(c.nK, x, offsets[ci]!, (j) => c.powVar(j), c.partial);
-                return c.layout(sel, pow);
+                const pc = plainCompOf(ci);
+                const [sel, pow] = pick(pc.nK, x, offsets[ci]!, (j) => pc.powVar(j), pc.partial);
+                const l = pc.layout(sel, pow);
+                return pc === c ? l : { ...l, src: pc.cands };
             });
             tables.forEach(({ cis, table }, k) => {
                 let bi = 0;
@@ -1213,6 +1224,93 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
          * less than the limit, the cell's corners get their exact values and the cell is split at (p, q), and the
          * search runs again. Every limit stays a true upper limit, so the proven maximum stays exact.
          */
+        // Areas searched plant by plant (no listed layouts) use reduced spots without the overlap rule. If such an
+        // area's plants do not fit on real positions: a complete search for positions at least as good (boosting every
+        // deposit the spot boosts, building over no other) keeps the layout's value; if there are none, the area is
+        // searched on a finer view of its real positions from then on (level 1: positions with the same effect -
+        // kind, deposits boosted and built over - grouped; level 2: every position), with "at most one" rows for
+        // groups all of whose positions share a tile and no-goods for groups proven not to fit together. A view's
+        // layout is placed on its groups' own positions (same effect: the same score) or ruled out: exact.
+        interface PlainView { lv: number; same: Cand[][]; rows: { js: number[]; hi: number }[]; comp: Comp }
+        const plainViews = new Map<number, PlainView>();
+        const areaPositions = new Map<number, Cand[]>();
+        const positions_of = (ci: number) => {
+            let a = areaPositions.get(ci);
+            if (!a) {
+                const deps = new Set(C[ci]!.deps);
+                const inside = (x: Int32Array) => x.every((d) => deps.has(d));
+                a = getPositions().reaching(deps).filter((q) => inside(q.cover) && inside(q.foot));
+                areaPositions.set(ci, a);
+            }
+            return a;
+        };
+        const plain_view = (ci: number, lv: number): PlainView => {
+            const byKey = new Map<string, Cand[]>();
+            positions_of(ci).forEach((q, k) => {
+                const key = lv < 2 ? `${q.kind}|${q.cover.join(",")}|${q.foot.join(",")}` : String(k);
+                let g = byKey.get(key);
+                if (!g) byKey.set(key, (g = []));
+                g.push(q);
+            });
+            const same = [...byKey.values()];
+            const sure = new Map<number, number[]>();
+            same.forEach((g, j) => {
+                let tiles = new Set(footprint(g[0]!));
+                for (let k = 1; k < g.length && tiles.size; k++) { const f = new Set(footprint(g[k]!)); tiles = new Set([...tiles].filter((t) => f.has(t))); }
+                for (const t of tiles) { let l = sure.get(t); if (!l) sure.set(t, (l = [])); l.push(j); }
+            });
+            const seen = new Set<string>(), rows: PlainView["rows"] = [];
+            for (const js of sure.values()) {
+                if (js.length < 2) continue;
+                const k = js.join(",");
+                if (!seen.has(k)) { seen.add(k); rows.push({ js, hi: 1 }); }
+            }
+            return { lv, same, rows, comp: new Comp(same.map((g) => g[0]!), dep.type, P.S, C[ci]!.partial, false) };
+        };
+        const plainComp = (ci: number) => plainViews.get(ci)?.comp ?? C[ci]!;
+        const plainRows = (ci: number) => plainViews.get(ci)?.rows ?? [];
+        /** puts the plain areas' layouts on real positions where needed (in place); areas that need a (finer) view go
+         * to toView; returns how many no-goods were added */
+        const place_plain = (lays: Iterable<[number, Layout]>, toView: Map<number, number>): number => {
+            let cuts = 0;
+            const Ps = getPositions();
+            for (const [ci, l] of lays) {
+                if (!l.sel.length) continue;
+                const v = plainViews.get(ci);
+                if (!v) {
+                    const cs = C[ci]!.cands;
+                    if (!realize(l.sel.map((j, k): Placed => ({ cand: cs[j]!, pow: l.pow[k]! })), getPositions).failed) continue;
+                    const own = placeable(l.sel.map((j) => Ps.alternatives(cs[j]!, false)));
+                    if (own) { l.src = own; l.sel = own.map((_, k) => k); }
+                    else if (!toView.has(ci)) toView.set(ci, 1);
+                    continue;
+                }
+                // a view's groups: on their own positions, or proven not to fit together (a no-good, made as small as
+                // possible), or undecided (every position on its own next time)
+                const sel = l.sel.slice();
+                const own = placeable(sel.map((j) => v.same[j]!));
+                if (own) { l.src = own; l.sel = own.map((_, k) => k); continue; }
+                if (own === false) {
+                    let g = [...new Set(sel)];
+                    for (let k = g.length - 1; k >= 0 && g.length > 2; k--) {
+                        const h = g.filter((_, q) => q !== k);
+                        if (placeable(h.map((j) => v.same[j]!), 200_000) === false) g = h;
+                    }
+                    g.sort((a, b) => a - b);
+                    const key = g.join(",");
+                    if (!v.rows.some((r) => r.hi === r.js.length - 1 && r.js.join(",") === key)) { v.rows.push({ js: g, hi: g.length - 1 }); cuts++; }
+                } else if (v.lv < 2 && !toView.has(ci)) toView.set(ci, 2);
+            }
+            return cuts;
+        };
+        const apply_views = (toView: Map<number, number>): number => {
+            for (const [ci, lv] of toView) {
+                plainViews.get(ci)?.comp.dispose();
+                plainViews.set(ci, plain_view(ci, lv));
+            }
+            return toView.size;
+        };
+
         const partial_search = (): LayoutReport => {
             bound = Infinity;
             bestVal = start!.score; startPlants = start!.plants;
@@ -1582,38 +1680,6 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
             // groups of overlapping partly powered plants per plain area (group_rows), added when a search used them:
             // per tile the partly powered plants reaching it, and per kind those of that kind
             const groups = new Map<number, number[][]>();
-            // plain areas whose spots did not fit on real positions are searched on a finer view of their positions from
-            // then on: level 1 groups the positions with the same effect (kind, deposits boosted and built over), level 2
-            // is every position. Groups all of whose positions share a tile get a row (at most one of them), groups
-            // proven not to fit together a no-good. A layout of a view is placed on its groups' own positions (same
-            // effect: the same score) or ruled out, so the search stays exact.
-            interface PlainView { lv: number; same: Cand[][]; rows: { js: number[]; hi: number }[]; comp: Comp }
-            const plainViews = new Map<number, PlainView>();
-            const plain_view = (ci: number, lv: number): PlainView => {
-                const byKey = new Map<string, Cand[]>();
-                real_cands(ci).forEach((q, k) => {
-                    const key = lv < 2 ? `${q.kind}|${q.cover.join(",")}|${q.foot.join(",")}` : String(k);
-                    let g = byKey.get(key);
-                    if (!g) byKey.set(key, (g = []));
-                    g.push(q);
-                });
-                const same = [...byKey.values()];
-                const sure = new Map<number, number[]>();
-                same.forEach((g, j) => {
-                    let tiles = new Set(footprint(g[0]!));
-                    for (let k = 1; k < g.length && tiles.size; k++) { const f = new Set(footprint(g[k]!)); tiles = new Set([...tiles].filter((t) => f.has(t))); }
-                    for (const t of tiles) { let l = sure.get(t); if (!l) sure.set(t, (l = [])); l.push(j); }
-                });
-                const seen = new Set<string>(), rows: PlainView["rows"] = [];
-                for (const js of sure.values()) {
-                    if (js.length < 2) continue;
-                    const k = js.join(",");
-                    if (!seen.has(k)) { seen.add(k); rows.push({ js, hi: 1 }); }
-                }
-                return { lv, same, rows, comp: new Comp(same.map((g) => g[0]!), dep.type, P.S, true, false) };
-            };
-            const plainComp = (ci: number) => plainViews.get(ci)?.comp ?? C[ci]!;
-            const plainRows = (ci: number) => plainViews.get(ci)?.rows ?? [];
             const add_groups = (plainLays: Map<number, Layout>): number => {
                 let added = 0;
                 for (const [ci, l] of plainLays) {
@@ -1664,36 +1730,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                         allInexact.push(...a.inexact);
                         newPairs += add_groups(ch.plainLays);
                         // plain areas: placed on real positions now, so the exact score below is the layout's own
-                        const Ps = getPositions();
-                        for (const [ci, l] of ch.plainLays) {
-                            if (!l.sel.length) continue;
-                            const v = plainViews.get(ci);
-                            if (!v) {
-                                // spots: the quick placement, else a complete search for positions at least as good
-                                // (boosting every deposit the spot boosts, building over no other); none: a finer view
-                                const cs = C[ci]!.cands;
-                                if (!realize(l.sel.map((j, k): Placed => ({ cand: cs[j]!, pow: l.pow[k]! })), getPositions).failed) continue;
-                                const own = placeable(l.sel.map((j) => Ps.alternatives(cs[j]!, false)));
-                                if (own) { l.src = own; l.sel = own.map((_, k) => k); }
-                                else if (!toView.has(ci)) toView.set(ci, 1);
-                                continue;
-                            }
-                            // a view's groups: on their own positions, or proven not to fit together (a no-good, made
-                            // as small as possible), or undecided (every position on its own next time)
-                            const sel = l.sel.slice();
-                            const own = placeable(sel.map((j) => v.same[j]!));
-                            if (own) { l.src = own; l.sel = own.map((_, k) => k); continue; }
-                            if (own === false) {
-                                let g = [...new Set(sel)];
-                                for (let k = g.length - 1; k >= 0 && g.length > 2; k--) {
-                                    const h = g.filter((_, q) => q !== k);
-                                    if (placeable(h.map((j) => v.same[j]!), 200_000) === false) g = h;
-                                }
-                                g.sort((a, b) => a - b);
-                                const key = g.join(",");
-                                if (!v.rows.some((r) => r.hi === r.js.length - 1 && r.js.join(",") === key)) { v.rows.push({ js: g, hi: g.length - 1 }); cuts++; }
-                            } else if (v.lv < 2 && !toView.has(ci)) toView.set(ci, 2);
-                        }
+                        cuts += place_plain(ch.plainLays, toView);
                         const r = real(a.lays);
                         if (r.v > bestVal + 1e-12) { take(r.v, a.lays, r.plants); better = true; }
                     }
@@ -1712,11 +1749,8 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                         const r = real(last.lays);
                         if (r.v > bestVal + 1e-12) { take(r.v, last.lays, r.plants); hooks.layout({ score: bestVal, exact: true, bound, plants: bestPlants() }); }
                     }
-                    for (const [ci, lv] of toView) {
-                        plainViews.get(ci)?.comp.dispose();
-                        plainViews.set(ci, plain_view(ci, lv));
-                        groups.delete(ci);           // its groups were positions of the old view
-                    }
+                    for (const ci of toView.keys()) groups.delete(ci);     // their groups were positions of the old view
+                    apply_views(toView);
                     if (!tightened && !newPairs && !fixes && !toView.size && !cuts) break;
                     const changed = tightened + newPairs + fixes + toView.size + cuts;
                     hooks.progress({ step: "search", message: `Partly powered plants: ${changed} limit${changed > 1 ? "s" : ""} made exact${fixes ? ` (plants did not fit in ${fixes} item${fixes > 1 ? "s" : ""})` : ""}; searching again`, best: bestVal, bound });
@@ -1827,8 +1861,25 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                     if (score > bestVal + 1e-12) hooks.layout({ score: settings.partial ? bestVal : score, exact: false, bound: Math.min(bound, b), plants: placedPlants(lays) });
                 },
                 (best, b) => hooks.progress({ step: "search", message: `Searching for better layouts${pass > 1 ? ` (round ${pass})` : ""}`, best: Math.max(best, bestVal), bound: Math.min(bound, b) }),
-                options, mixed);
+                options, mixed, Infinity, plainComp, plainRows);
+            // areas searched plant by plant: on real positions (or a finer view / no-good for the next search)
+            const toView = new Map<number, number>();
+            let viewChanges = 0;
             if (res.lays) {
+                const isPlain = (ci: number) => !options[ci] && !mixed[ci];
+                viewChanges = place_plain(res.lays.map((l, ci): [number, Layout] => [ci, l]).filter(([ci]) => isPlain(ci)), toView);
+                viewChanges += apply_views(toView);
+                // areas with bridge options: their plants on real positions at least as good; if they do not fit, the
+                // area is searched plant by plant from then on (an upper limit too, and placed as above)
+                const Ps = getPositions();
+                res.lays.forEach((l, ci) => {
+                    if (!mixed[ci] || !l.sel.length) return;
+                    const src = l.src ?? C[ci]!.cands;
+                    if (!realize(l.sel.map((j, k): Placed => ({ cand: src[j]!, pow: l.pow[k]! })), getPositions).failed) return;
+                    const own = placeable(l.sel.map((j) => Ps.alternatives(src[j]!, false)));
+                    if (own) { l.src = own; l.sel = own.map((_, k) => k); }
+                    else { mixed[ci] = null; viewChanges++; }
+                });
                 const r = real(res.lays);
                 if (r.v > bestVal) take(r.v, res.lays, r.plants);
             }
@@ -1844,7 +1895,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                     }
                     if (better) hooks.layout({ score: bestVal, exact: true, bound, plants: bestPlants() });
                     if (res.lays && res.optimal && !closed()) {
-                        const n = refine(res.lays);
+                        const n = refine(res.lays) + viewChanges;
                         if (n) {
                             hooks.progress({ step: "search", message: `Plants did not fit in ${n} area${n > 1 ? "s" : ""}: correcting ${n > 1 ? "those layouts" : "that layout"}`, best: bestVal, bound });
                             continue;
@@ -1870,6 +1921,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
             hooks.progress({ step: "search", message: `${broken} partly powered plant${broken > 1 ? "s" : ""} shared tiles with other plants; searching again`, best: bestVal, bound });
         }
         exactComps.forEach((c) => c?.dispose());
+        for (const v of plainViews.values()) v.comp.dispose();
         if (!settings.partial && options.length) share.options = options;
         return finish_up();
     } finally {
