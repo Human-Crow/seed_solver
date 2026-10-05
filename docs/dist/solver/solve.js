@@ -1861,6 +1861,8 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
             // groups of overlapping partly powered plants per plain area (group_rows), added when a search used them:
             // per tile the partly powered plants reaching it, and per kind those of that kind
             const groups = new Map();
+            // areas that got new groups in this round, and areas whose view was kept once (see below)
+            const grouped = new Set(), kept = new Set();
             const add_groups = (plainLays) => {
                 let added = 0;
                 for (const [ci, l] of plainLays) {
@@ -1888,6 +1890,7 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                             seen.add(key);
                             list.push(key.split(",").map(Number));
                             added++;
+                            grouped.add(ci);
                         }
                     }
                     if (list.length)
@@ -1955,6 +1958,14 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                             hooks.layout({ score: bestVal, exact: true, bound, plants: bestPlants() });
                         }
                     }
+                    // An area whose plants did not fit, but that also got new groups: its partly powered plants were
+                    // stacked on the same tiles only because their shares added up in the search, which the groups
+                    // now rule out. So the first time its view is kept: a finer view (every real position) would make
+                    // every later search much bigger, and the stacking was the only reason the plants did not fit.
+                    for (const ci of grouped)
+                        if (!kept.has(ci) && toView.delete(ci))
+                            kept.add(ci);
+                    grouped.clear();
                     for (const ci of toView.keys())
                         groups.delete(ci); // their groups were positions of the old view
                     apply_views(toView);
