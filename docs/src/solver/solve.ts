@@ -1680,6 +1680,8 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
             // groups of overlapping partly powered plants per plain area (group_rows), added when a search used them:
             // per tile the partly powered plants reaching it, and per kind those of that kind
             const groups = new Map<number, number[][]>();
+            // areas that got new groups in this round, and areas whose view was kept once (see below)
+            const grouped = new Set<number>(), kept = new Set<number>();
             const add_groups = (plainLays: Map<number, Layout>): number => {
                 let added = 0;
                 for (const [ci, l] of plainLays) {
@@ -1695,7 +1697,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                             if (g.length < 2) continue;
                             const key = [...g].sort((a, b) => a - b).join(",");
                             if (seen.has(key)) continue;
-                            seen.add(key); list.push(key.split(",").map(Number)); added++;
+                            seen.add(key); list.push(key.split(",").map(Number)); added++; grouped.add(ci);
                         }
                     }
                     if (list.length) groups.set(ci, list);
@@ -1749,6 +1751,12 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                         const r = real(last.lays);
                         if (r.v > bestVal + 1e-12) { take(r.v, last.lays, r.plants); hooks.layout({ score: bestVal, exact: true, bound, plants: bestPlants() }); }
                     }
+                    // An area whose plants did not fit, but that also got new groups: its partly powered plants were
+                    // stacked on the same tiles only because their shares added up in the search, which the groups
+                    // now rule out. So the first time its view is kept: a finer view (every real position) would make
+                    // every later search much bigger, and the stacking was the only reason the plants did not fit.
+                    for (const ci of grouped) if (!kept.has(ci) && toView.delete(ci)) kept.add(ci);
+                    grouped.clear();
                     for (const ci of toView.keys()) groups.delete(ci);     // their groups were positions of the old view
                     apply_views(toView);
                     if (!tightened && !newPairs && !fixes && !toView.size && !cuts) break;
