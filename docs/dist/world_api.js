@@ -44,6 +44,8 @@ export async function fetch_world(req) {
         platform: req.version === "steam" ? "steam" : "ios",
         gen: req.version === "ios2" ? "2" : "1",
         map: "auto",
+        gv: "2", // generator version: the server ignores it, but a new address makes browsers fetch worlds
+        // again after a generator fix (each answer is kept in the browser for a year)
     });
     const res = await fetch(`${DEFAULT_WORKER}/generateWorld?${q}`);
     if (!res.ok) {
