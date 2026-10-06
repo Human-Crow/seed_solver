@@ -14,7 +14,9 @@ const ALT_KEYS: Record<string, string> = {
     Electric_Motor: "em", Industrial_Frame: "if", Turbocharger: "tg", Super_Computer: "sc", Tungsten_Carbide: "tc", Rotor: "ro",
 };
 
-const num = (v: number) => String(Math.round(v * 1e6) / 1e6);
+// full precision: the calculator then works with exactly the shares, ratios and plant counts of this layout and
+// shows the same score (rounding them would change its result in the 7th digit)
+const num = (v: number) => (Math.abs(v) < 1e-12 ? "0" : String(v));
 
 export function calc_link(settings: SolverSettings, gen2: boolean, d: LayoutDetails, ncoal: number, nnuc: number): string {
     const pairs: string[] = [

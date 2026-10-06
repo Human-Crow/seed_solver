@@ -9,7 +9,9 @@ const ALT_KEYS = {
     Copper_Wire: "cw", Iron_Gear: "ig", Steel: "st", Concrete: "cc", Electromagnet: "eg", Logic_Circuit: "lc",
     Electric_Motor: "em", Industrial_Frame: "if", Turbocharger: "tg", Super_Computer: "sc", Tungsten_Carbide: "tc", Rotor: "ro",
 };
-const num = (v) => String(Math.round(v * 1e6) / 1e6);
+// full precision: the calculator then works with exactly the shares, ratios and plant counts of this layout and
+// shows the same score (rounding them would change its result in the 7th digit)
+const num = (v) => (Math.abs(v) < 1e-12 ? "0" : String(v));
 export function calc_link(settings, gen2, d, ncoal, nnuc) {
     const pairs = [
         "mode:Resource", `item:${settings.target}`, `alt:${settings.alt ? 1 : 0}`, `gen2:${gen2 ? 1 : 0}`,
