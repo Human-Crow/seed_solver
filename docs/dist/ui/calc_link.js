@@ -1,5 +1,5 @@
 // Link to the Alt Calculator (Resource mode) with the layout's extractors, boosts, power plants and ALT ratios.
-// Extractors on built-over deposits are not counted.
+// Removed deposits (built over by a plant, or enclosed by deposits and water) are not counted.
 import { RAW_ITEMS } from "../solver/data.js";
 import { CALC_URL } from "./config.js";
 const RAW_KEYS = {

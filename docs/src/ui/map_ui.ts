@@ -3,7 +3,8 @@
 import { MapView, DEPOSIT_STYLE, PLANT_STYLE } from "../map.js";
 import type { World } from "../world_api.js";
 import type { Plant } from "../solver/solve.js";
-import { map_block, map_canvas, zoom_in_btn, zoom_out_btn, zoom_fit_btn, areas_box, map_hud, goto_x, goto_y, goto_btn, only_partial_box, only_partial_label, legend, deposit_table, deposit_block, calc_link_world_a } from "./dom.js";
+import { map_block, map_canvas, zoom_in_btn, zoom_out_btn, zoom_fit_btn, areas_box, map_hud, goto_x, goto_y, goto_btn, only_partial_box, only_partial_label, legend, deposit_table, deposit_block, calc_link_world_a, water_box } from "./dom.js";
+import { enclosed_deposits } from "../solver/enclosed.js";
 import { settings_now } from "./inputs.js";
 import { calc_link_world } from "./calc_link.js";
 import { RAW_ITEMS } from "../solver/data.js";
@@ -21,21 +22,31 @@ export function show_world(world: World) {
 }
 
 let shown: { gen2: boolean; tiles: number[] } | null = null;
+let shownWorld: World | null = null;
 
-// deposit tiles per resource
+// deposit tiles per resource (enclosed ones left out: all four sides deposits or water, no usable extractor)
 function show_deposits(world: World) {
+    fill_deposits(world);
+    deposit_block.classList.remove("hidden");
+}
+
+function fill_deposits(world: World) {
+    shownWorld = world;
     const d = world.deposits;
+    const enc = water_box.checked ? new Uint8Array(d.count) : enclosed_deposits(world);
     const tiles = new Array<number>(7).fill(0);
+    let nenc = 0;
     for (let i = 0; i < d.count; i++) {
         const k = d.id[i]! - 11;
+        if (enc[i]) { nenc++; continue; }
         if (k >= 0 && k <= 6) tiles[k]!++;
     }
     // one row of tiles: icon with its tile count underneath (wraps on narrow screens)
     const cells = RAW_ITEMS.map((item, k) =>
         `<td class="deposit-cell${tiles[k] ? "" : " deposit-none"}" title="${pretty(item)}">` +
         `<img class="item-img" src="assets/${item}.png" alt="${pretty(item)}"><span>${tiles[k]}</span></td>`).join("");
-    deposit_table.innerHTML = `<caption>Deposit tiles per resource</caption><tr>${cells}</tr>`;
-    deposit_block.classList.remove("hidden");
+    const note = nenc ? ` <span class="deposit-removed" title="All four sides deposits or water: an extractor there cannot be used">(${nenc} enclosed tile${nenc > 1 ? "s" : ""} removed)</span>` : "";
+    deposit_table.innerHTML = `<caption>Deposit tiles per resource${note}</caption><tr>${cells}</tr>`;
     shown = { gen2: world.gen2, tiles };
     update_world_link();
 }
@@ -87,6 +98,7 @@ export function init_map() {
     goto_btn.addEventListener("click", go_from_inputs);
     for (const el of [goto_x, goto_y]) el.addEventListener("keydown", (e) => { if (e.key === "Enter") go_from_inputs(); });
     calc_link_world_a.addEventListener("click", update_world_link);
+    water_box.addEventListener("change", () => { if (shownWorld) fill_deposits(shownWorld); });
     zoom_in_btn.addEventListener("click", () => view.zoom(1.6));
     zoom_out_btn.addEventListener("click", () => view.zoom(1 / 1.6));
     zoom_fit_btn.addEventListener("click", () => view.fit());

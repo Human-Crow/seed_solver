@@ -15,11 +15,12 @@ export function show_result(settings, gen2, d, plants) {
     result_img.src = `assets/${target}.png`;
     result_score.textContent = `${fmt(d.score)} ${pretty(target)} per minute`;
     const ncoal = plants.filter((p) => p.kind === "coal").length, nnuc = plants.length - ncoal;
-    const removed = Object.values(d.boosts).reduce((s, b) => s + b.removed, 0);
+    const removed = Object.values(d.boosts).reduce((s, b) => s + b.removed, 0); // built over or enclosed
+    const removedNote = removed ? `${removed} deposit tile${removed > 1 ? "s" : ""} removed` : "";
     const partly = plants.filter((p) => (p.power ?? 1) < 1);
     result_note.textContent = settings.boost
-        ? `${ncoal} coal and ${nnuc} nuclear power plants${removed ? `, ${removed} deposit tile${removed > 1 ? "s" : ""} built over` : ""}.`
-        : "Without power plants.";
+        ? `${ncoal} coal and ${nnuc} nuclear power plants${removedNote ? `, ${removedNote}` : ""}.`
+        : `Without power plants${removedNote ? `, ${removedNote}` : ""}.`;
     // with "Partly powered plants" on: always say how many are used
     const showPartial = settings.boost && !!settings.partial;
     partial_note.classList.toggle("hidden", !showPartial);
@@ -31,7 +32,7 @@ export function show_result(settings, gen2, d, plants) {
     // fuel actually burnt: partly powered plants count for their share (for the calculator)
     const run = (kind) => plants.reduce((a, p) => a + (p.kind === kind ? p.power ?? 1 : 0), 0);
     const head = `<tr><th></th><th class="num">Extractors</th><th class="num color-green">Nuclear</th>` +
-        `<th class="num color-yellow">Coal</th><th class="num">None</th><th class="num color-red">Built over</th></tr>`;
+        `<th class="num color-yellow">Coal</th><th class="num">None</th><th class="num color-red" title="Built over by a power plant, or enclosed: all four sides deposits or water, so an extractor there cannot be used">Removed</th></tr>`;
     // partly powered plants boost part of the time: those extractors count as fractions
     const n = (v) => { const r = Math.round(v * 10) / 10; return Number.isInteger(r) ? String(r) : r.toFixed(1); };
     const rows = RAW_ITEMS.map((item) => {

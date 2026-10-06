@@ -14,6 +14,7 @@ import { COAL_FUEL_PER_MIN, NUCLEAR_FUEL_PER_MIN, PLANT_SHAPES, RAW_ITEMS } from
 import { find_candidates } from "./candidates.js";
 import { Columns, RecipeModel, speed_table } from "./model.js";
 import { Positions, footprint, placeable, realize } from "./realize.js";
+import { enclosed_deposits } from "./enclosed.js";
 const POW_EPS = 1e-6;
 /** chosen plants and their powered shares from a solution vector (unpowered plants are left out) */
 function pick(nK, x, off, powVar, partial) {
@@ -1170,12 +1171,25 @@ export class Problem {
             c.dispose();
     }
 }
+/** the deposits the solver uses: every deposit except the enclosed ones (see enclosed_deposits) */
 export function to_deposits(world) {
-    const n = world.deposits.x.length;
-    const type = new Uint8Array(n);
-    for (let i = 0; i < n; i++)
-        type[i] = world.deposits.id[i] - 11;
-    return { count: n, type, x: world.deposits.x, y: world.deposits.y };
+    const enc = enclosed_deposits(world);
+    const keep = [];
+    for (let i = 0; i < enc.length; i++)
+        if (!enc[i])
+            keep.push(i);
+    const n = keep.length;
+    const type = new Uint8Array(n), x = new Int32Array(n), y = new Int32Array(n);
+    keep.forEach((j, i) => { type[i] = world.deposits.id[j] - 11; x[i] = world.deposits.x[j]; y[i] = world.deposits.y[j]; });
+    return { count: n, type, x, y };
+}
+/** enclosed deposits per raw item index (0..6) */
+function enclosed_counts(world) {
+    const enc = enclosed_deposits(world), out = new Array(7).fill(0);
+    for (let i = 0; i < enc.length; i++)
+        if (enc[i])
+            out[world.deposits.id[i] - 11]++;
+    return out;
 }
 /**
  * Solve a world. Reports every better layout through hooks.layout (the first one after step 1) and the
@@ -2197,6 +2211,7 @@ export function evaluate_layout(H, world, settings, plants) {
     const M = new RecipeModel(settings.alt, settings.target);
     const S = speed_table(settings.tier, world.gen2);
     const boosts = boost_counts(dep, plants);
+    enclosed_counts(world).forEach((c, t) => { boosts[RAW_ITEMS[t]].removed += c; }); // removed: built over or enclosed
     const caps = new Float64Array(7);
     const sh = deposit_shares(dep, plants);
     for (let i = 0; i < dep.count; i++) {
@@ -2238,7 +2253,7 @@ export function evaluate_layout(H, world, settings, plants) {
         m.dispose();
     }
 }
-/** per deposit: -1 built over, 0 none, 1 coal, 2 nuclear (nuclear wins when both cover a tile) */
+/** per deposit: -1 built over (removed), 0 none, 1 coal, 2 nuclear (nuclear wins when both cover a tile) */
 export function deposit_levels(dep, plants) {
     const index = new Map();
     for (let i = 0; i < dep.count; i++)
