@@ -5,7 +5,7 @@
   "private": true,
   "main": "index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node add_version.mjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
