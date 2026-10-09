@@ -697,6 +697,53 @@ function group_rows(c, groups) {
     }
     return { rows, n };
 }
+/**
+ * Partly powered plants of one area: a tile gets at most the largest share of the partly powered plants reaching
+ * it (shares()), so at most the largest share in the whole area, m. Per kind (nuclear, coal) and for both together:
+ * m <= p_a for the one plant a chosen (z_a = 1, exactly one) and m = 0 when a is fully powered; each tile reached gets
+ * share <= m + (fully powered plants reaching it). This holds for every real layout, so the search stays an upper
+ * limit; it stops the search from adding up the shares of many partly powered plants on the same tiles (which
+ * group_rows can only rule out one group at a time). Variables from `start`: per set m, then z per plant.
+ */
+function max_rows(c, start) {
+    const rows = [];
+    const ints = [];
+    if (!c.partial || !c.nK)
+        return { rows, ints };
+    const di = new Map(c.deps.map((d, i) => [d, i]));
+    const reach = new Map();
+    c.cands.forEach((q, j) => q.cover.forEach((d) => { let l = reach.get(d); if (!l)
+        reach.set(d, (l = [])); l.push(j); }));
+    for (const kinds of [[1], [0], [0, 1]]) {
+        const js = [];
+        for (let j = 0; j < c.nK; j++)
+            if (kinds.includes(c.cands[j].kind))
+                js.push(j);
+        if (!js.length)
+            continue;
+        const m = start + ints.length;
+        ints.push(false);
+        const z = js.map((_, k) => start + ints.length + k);
+        for (const _ of js)
+            ints.push(true);
+        rows.push({ cols: z, vals: z.map(() => 1), hi: 1 });
+        rows.push({ cols: z, vals: z.map(() => -1), hi: -1 });
+        js.forEach((j, k) => {
+            rows.push({ cols: [m, c.powVar(j), z[k]], vals: [1, -1, 1], hi: 1 }); // m <= p_j when z_j
+            rows.push({ cols: [m, c.fullVar(j), z[k]], vals: [1, 1, 1], hi: 2 }); // m = 0 when z_j and j full
+        });
+        for (const [d, ks] of reach) {
+            const has = new Set(ks.map((j) => c.cands[j].kind));
+            if (!kinds.every((k) => has.has(k)))
+                continue;
+            const i = di.get(d);
+            const share = [...(kinds.includes(1) ? [c.nK + i] : []), ...(kinds.includes(0) ? [c.nK + c.nD + i] : [])];
+            const full = ks.map((j) => c.fullVar(j));
+            rows.push({ cols: [...share, ...full, m], vals: [...share.map(() => 1), ...full.map(() => -1), -1], hi: 0 });
+        }
+    }
+    return { rows, ints };
+}
 // ---------------------------------------------------------------- the whole problem
 export class Problem {
     H;
@@ -1011,7 +1058,7 @@ export class Problem {
      * values mixed with the same weights (an upper limit: the best value is convex in p and q). Areas without
      * a table (several raw items) are searched plant by plant with partial power (optimistic on shared tiles).
      */
-    partialMip(gap, items, plain, groups, onImproving, onLog, cutoff = -Infinity, plainComp = (ci) => this.comps[ci], plainRows = () => []) {
+    partialMip(gap, items, plain, groups, onImproving, onLog, cutoff = -Infinity, plainComp = (ci) => this.comps[ci], plainRows = () => [], maxed = new Set()) {
         const { M, H } = this;
         const nI = M.nI;
         const cols = new Columns();
@@ -1033,10 +1080,14 @@ export class Problem {
             const only = c.cands.map((q) => { const its = new Set([...q.cover, ...q.foot].map((d) => this.dep.type[d])); return its.size === 1 ? [...its][0] : -1; });
             // the area's rows, and per group of overlapping partly powered plants its rows (group_rows)
             const extra = group_rows(c, groups.get(ci) ?? []);
-            const all = [...c.rows, ...extra.rows, ...plainRows(ci).map((r) => ({ cols: r.js, vals: r.js.map(() => 1), hi: r.hi }))];
-            const byVar = Array.from({ length: c.nv + extra.n }, () => ({ rows: [], vals: [] }));
+            // and, once a search stacked partly powered plants in this area, their largest share (max_rows)
+            const mx = maxed.has(ci) ? max_rows(c, c.nv + extra.n) : { rows: [], ints: [] };
+            const extraInt = [...new Array(extra.n).fill(true), ...mx.ints];
+            const nExtra = extraInt.length;
+            const all = [...c.rows, ...extra.rows, ...mx.rows, ...plainRows(ci).map((r) => ({ cols: r.js, vals: r.js.map(() => 1), hi: r.hi }))];
+            const byVar = Array.from({ length: c.nv + nExtra }, () => ({ rows: [], vals: [] }));
             all.forEach((r, n) => r.cols.forEach((v, k) => { byVar[v].rows.push(n); byVar[v].vals.push(r.vals[k]); }));
-            for (let v = 0; v < c.nv + extra.n; v++) {
+            for (let v = 0; v < c.nv + nExtra; v++) {
                 const rows = [], vals = [];
                 if (v < c.nv) {
                     M.rawRows.forEach((row, r) => { const g = c.G[r * c.nv + v]; if (g !== 0) {
@@ -1058,7 +1109,7 @@ export class Problem {
                     }
                 }
                 const order = rows.map((_, i) => i).sort((a, b) => rows[a] - rows[b]);
-                cols.add([...order.map((i) => rows[i]), ...byVar[v].rows.map((q) => q + rowBase)], [...order.map((i) => vals[i]), ...byVar[v].vals], 0, v < c.nv ? c.ub[v] : 1, 0, v < c.nv ? c.isInt(v) : true);
+                cols.add([...order.map((i) => rows[i]), ...byVar[v].rows.map((q) => q + rowBase)], [...order.map((i) => vals[i]), ...byVar[v].vals], 0, v < c.nv ? c.ub[v] : 1, 0, v < c.nv ? c.isInt(v) : extraInt[v - c.nv]);
             }
             for (const r of all) {
                 lower.push(-Infinity);
@@ -1139,7 +1190,9 @@ export class Problem {
             const st = H.constants.modelStatus, status = run.modelStatus;
             // nothing above the cutoff found (HiGHS also stops when its limit is within the gap of the cutoff)
             const dual = -m.info.get("mip_dual_bound");
-            const bound = Number.isFinite(dual) ? Math.max(dual, cutoff) : cutoff;
+            // no limit from HiGHS: the cutoff is one only when the search finished (stopped early: nothing is known)
+            const done = status === st.infeasible || status === st.objectiveBound || status === st.optimal;
+            const bound = Number.isFinite(dual) ? Math.max(dual, cutoff) : (done ? cutoff : Infinity);
             const none = { optimal: true, score: -Infinity, bound, x: null, decode };
             if (status === st.infeasible || status === st.objectiveBound)
                 return none;
@@ -1877,6 +1930,9 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
             const groups = new Map();
             // areas that got new groups in this round, and areas whose view was kept once (see below)
             const grouped = new Set(), kept = new Set();
+            // areas where a search put several partly powered plants on the same tiles: from then on their searches
+            // also get max_rows (only then: the extra yes/no choices slow down the searches that do not need them)
+            const maxed = new Set();
             const add_groups = (plainLays) => {
                 let added = 0;
                 for (const [ci, l] of plainLays) {
@@ -1905,6 +1961,7 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                             list.push(key.split(",").map(Number));
                             added++;
                             grouped.add(ci);
+                            maxed.add(ci);
                         }
                     }
                     if (list.length)
@@ -1919,7 +1976,7 @@ function solve_core(H, world, settings, gap, hooks, start, share = {}) {
                     const cutoff = bestVal;
                     hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""}…`, best: bestVal, ...(Number.isFinite(bound) ? { bound } : {}) });
                     const sols = [];
-                    const res = P.partialMip(gap, items, plain, groups, (x, score) => sols.push({ x, score }), (_, b) => hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""}`, best: bestVal, bound: Math.min(bound, Math.max(b, cutoff)) }), cutoff, plainComp, plainRows);
+                    const res = P.partialMip(gap, items, plain, groups, (x, score) => sols.push({ x, score }), (_, b) => hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""}`, best: bestVal, bound: Math.min(bound, Math.max(b, cutoff)) }), cutoff, plainComp, plainRows, maxed);
                     if (Number.isFinite(res.bound))
                         bound = Math.min(bound, Math.max(res.bound, bestVal));
                     // found layouts whose own (upper limit) score could beat the best real one, and the final one
