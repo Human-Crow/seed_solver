@@ -742,6 +742,44 @@ function max_rows(c: Comp, start: number): { rows: { cols: number[]; vals: numbe
 }
 
 
+/**
+ * Shares on deposits where a search stacked partly powered plants: the game counts only the largest share of the
+ * partly powered plants reaching a deposit (shares()), the search plant by plant adds them up. Per deposit d (id)
+ * the plants seen partly powered there, S (tiles.get(d)): yes/no variables z_j (one per plant of S, exactly one
+ * chosen; indexes from `start` on) pick whose share counts, the other plants reaching d are added up:
+ *     share <= p_j + (fully powered plants reaching d, except j) + (powers of the plants outside S)
+ * With z on the largest partly powered plant of S this holds for every real layout, so the search stays an upper
+ * limit. Nuclear and coal separately, and their shares together where both kinds of S reach d.
+ */
+function tile_rows(c: Comp, tiles: Map<number, Set<number>>, start: number): { rows: { cols: number[]; vals: number[]; hi: number }[]; n: number } {
+    const rows: { cols: number[]; vals: number[]; hi: number }[] = [];
+    let n = 0;
+    if (!c.partial || !tiles.size) return { rows, n };
+    const di = new Map(c.deps.map((d, i) => [d, i]));
+    const reach = new Map<number, number[]>();
+    c.cands.forEach((q, j) => q.cover.forEach((d) => { if (!tiles.has(d)) return; let l = reach.get(d); if (!l) reach.set(d, (l = [])); l.push(j); }));
+    for (const d of [...reach.keys()].sort((a, b) => a - b)) {
+        const ks = reach.get(d)!, S = tiles.get(d)!, i = di.get(d)!;
+        for (const kinds of [[1], [0], [0, 1]] as (0 | 1)[][]) {
+            const js = ks.filter((j) => S.has(j) && kinds.includes(c.cands[j]!.kind));
+            if (js.length < 2 || (kinds.length === 2 && new Set(js.map((j) => c.cands[j]!.kind)).size < 2)) continue;
+            const share = [...(kinds.includes(1) ? [c.nK + i] : []), ...(kinds.includes(0) ? [c.nK + c.nD + i] : [])];
+            const rest = ks.filter((l) => !S.has(l) && kinds.includes(c.cands[l]!.kind)).map((l) => c.powVar(l));
+            const z = js.map((_, k) => start + n + k);
+            n += js.length;
+            rows.push({ cols: z, vals: z.map(() => 1), hi: 1 });
+            rows.push({ cols: z, vals: z.map(() => -1), hi: -1 });
+            js.forEach((j, k) => {
+                const full = ks.filter((l) => l !== j).map((l) => c.fullVar(l));
+                rows.push({ cols: [...share, ...full, ...rest, c.powVar(j), z[k]!],
+                    vals: [...share.map(() => 1), ...full.map(() => -1), ...rest.map(() => -1), -1, 1], hi: 1 });
+            });
+        }
+    }
+    return { rows, n };
+}
+
+
 // ---------------------------------------------------------------- the whole problem
 export class Problem {
     readonly M: RecipeModel;
@@ -1008,7 +1046,7 @@ export class Problem {
     partialMip(gap: number, items: PartialItem[], plain: number[], groups: Map<number, number[][]>,
                onImproving: (x: Float64Array, score: number) => void, onLog: (best: number, bound: number) => void,
                cutoff = -Infinity, plainComp: (ci: number) => Comp = (ci) => this.comps[ci]!,
-               plainRows: (ci: number) => { js: number[]; hi: number }[] = () => [], maxed: Set<number> = new Set()):
+               plainRows: (ci: number) => { js: number[]; hi: number }[] = () => [], exactTiles: Map<number, Map<number, Set<number>>> = new Map()):
             { optimal: boolean; score: number; bound: number; x: Float64Array | null; decode: (x: ArrayLike<number>) => PartialChoice } {
         const { M, H } = this;
         const nI = M.nI;
@@ -1028,11 +1066,14 @@ export class Problem {
             const only = c.cands.map((q) => { const its = new Set([...q.cover, ...q.foot].map((d) => this.dep.type[d]!)); return its.size === 1 ? [...its][0]! : -1; });
             // the area's rows, and per group of overlapping partly powered plants its rows (group_rows)
             const extra = group_rows(c, groups.get(ci) ?? []);
-            // and, once a search stacked partly powered plants in this area, their largest share (max_rows)
-            const mx = maxed.has(ci) ? max_rows(c, c.nv + extra.n) : { rows: [], ints: [] };
-            const extraInt = [...new Array<boolean>(extra.n).fill(true), ...mx.ints];
+            // and, once a search stacked partly powered plants in this area, their largest share in the area (max_rows)
+            // and on the deposits where they were stacked (tile_rows)
+            const tiles = exactTiles.get(ci) ?? new Map<number, Set<number>>();
+            const mx = tiles.size ? max_rows(c, c.nv + extra.n) : { rows: [], ints: [] };
+            const tr = tile_rows(c, tiles, c.nv + extra.n + mx.ints.length);
+            const extraInt = [...new Array<boolean>(extra.n).fill(true), ...mx.ints, ...new Array<boolean>(tr.n).fill(true)];
             const nExtra = extraInt.length;
-            const all = [...c.rows, ...extra.rows, ...mx.rows, ...plainRows(ci).map((r) => ({ cols: r.js, vals: r.js.map(() => 1), hi: r.hi }))];
+            const all = [...c.rows, ...extra.rows, ...mx.rows, ...tr.rows, ...plainRows(ci).map((r) => ({ cols: r.js, vals: r.js.map(() => 1), hi: r.hi }))];
             const byVar = Array.from({ length: c.nv + nExtra }, () => ({ rows: [] as number[], vals: [] as number[] }));
             all.forEach((r, n) => r.cols.forEach((v, k) => { byVar[v]!.rows.push(n); byVar[v]!.vals.push(r.vals[k]!); }));
             for (let v = 0; v < c.nv + nExtra; v++) {
@@ -1742,9 +1783,9 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
             const groups = new Map<number, number[][]>();
             // areas that got new groups in this round, and areas whose view was kept once (see below)
             const grouped = new Set<number>(), kept = new Set<number>();
-            // areas where a search put several partly powered plants on the same tiles: from then on their searches
-            // also get max_rows (only then: the extra yes/no choices slow down the searches that do not need them)
-            const maxed = new Set<number>();
+            // per plain area the deposits where a search put several partly powered plants, with those plants: from
+            // then on the area's searches get max_rows and tile_rows (only then: their yes/no choices slow the search)
+            const exactTiles = new Map<number, Map<number, Set<number>>>();
             const add_groups = (plainLays: Map<number, Layout>): number => {
                 let added = 0;
                 for (const [ci, l] of plainLays) {
@@ -1753,14 +1794,19 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                     const part = l.sel.filter((_, k) => l.pow[k]! < 1);
                     const at = new Map<number, number[]>();
                     for (const j of part) for (const d of c.cands[j]!.cover) { let x = at.get(d); if (!x) at.set(d, (x = [])); x.push(j); }
-                    for (const js of at.values()) {
+                    let tiles = exactTiles.get(ci);
+                    if (!tiles) exactTiles.set(ci, (tiles = new Map()));
+                    for (const [d, js] of at) {
                         if (js.length < 2) continue;
+                        let S = tiles.get(d);
+                        if (!S) tiles.set(d, (S = new Set()));
+                        if (js.some((j) => !S!.has(j))) { for (const j of js) S.add(j); added++; }
                         const cands = [js, js.filter((j) => c.cands[j]!.kind === 1), js.filter((j) => c.cands[j]!.kind === 0)];
                         for (const g of cands) {
                             if (g.length < 2) continue;
                             const key = [...g].sort((a, b) => a - b).join(",");
                             if (seen.has(key)) continue;
-                            seen.add(key); list.push(key.split(",").map(Number)); added++; grouped.add(ci); maxed.add(ci);
+                            seen.add(key); list.push(key.split(",").map(Number)); added++; grouped.add(ci);
                         }
                     }
                     if (list.length) groups.set(ci, list);
@@ -1776,7 +1822,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                     const sols: { x: Float64Array; score: number }[] = [];
                     const res = P.partialMip(gap, items, plain, groups, (x, score) => sols.push({ x, score }),
                         (_, b) => hooks.progress({ step: "search", message: `Searching with partly powered plants${pass > 1 ? ` (round ${pass})` : ""}`, best: bestVal, bound: Math.min(bound, Math.max(b, cutoff)) }),
-                        cutoff, plainComp, plainRows, maxed);
+                        cutoff, plainComp, plainRows, exactTiles);
                     if (Number.isFinite(res.bound)) bound = Math.min(bound, Math.max(res.bound, bestVal));
                     // found layouts whose own (upper limit) score could beat the best real one, and the final one
                     const before = bestVal;
@@ -1820,7 +1866,7 @@ function solve_core(H: HighsRuntime, world: WorldInput, settings: SolverSettings
                     // every later search much bigger, and the stacking was the only reason the plants did not fit.
                     for (const ci of grouped) if (!kept.has(ci) && toView.delete(ci)) kept.add(ci);
                     grouped.clear();
-                    for (const ci of toView.keys()) groups.delete(ci);     // their groups were positions of the old view
+                    for (const ci of toView.keys()) { groups.delete(ci); exactTiles.delete(ci); }    // positions of the old view
                     apply_views(toView);
                     if (!tightened && !newPairs && !fixes && !toView.size && !cuts) break;
                     const changed = tightened + newPairs + fixes + toView.size + cuts;
